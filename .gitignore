@@ -7,11 +7,11 @@ dist/
 .coverage
 htmlcov/
 .ipynb_checkpoints/
-results/
+results/*
 !results/README.md
-figures/
+figures/*
 !figures/README.md
-tables/
+tables/*
 !tables/README.md
 data/*
 !data/README.md
