@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "pfca: Pareto optimal fuzzy concept attribution"
+version: 0.1.0
+date-released: 2026-09-30
+license: MIT
+repository-code: "https://github.com/charis-ntak/pfca"
+authors:
+  - family-names: Ntakolia
+    given-names: Charis
+    email: cntakolia@hafa.gr
+    affiliation: "Department of Aeronautical Studies, Sector of Materials Engineering, Machining Technology and Production Management, Hellenic Air Force Academy, Dekeleia Base, 13672, Acharnes, Attica, Greece"

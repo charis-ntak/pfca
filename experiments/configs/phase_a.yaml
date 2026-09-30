@@ -1,0 +1,26 @@
+# Phase A: synthetic ground truth (Section 6.1)
+families: [additive, interaction, redundancy]
+n_samples: [200, 500, 2000]
+n_features: [10, 30, 100]
+rhos: [0.3, 0.6, 0.9]
+n_seeds: 50
+n_explain: 200
+tune_fraction: 0.34
+model_classes: [gbm, rf, mlp]
+n_resamples: 100
+background_size: 100
+explainer: auto
+methods: [pfca, pfca_crisp, pfca_single_model, pfca_fixed, pfca_apriori, shap, bootstrapped_shap, grouped_shap]
+pfca:
+  n_concepts_grid: [2, 3, 4, 5, 6, 8, 10, 12]
+  fuzzifier_grid: [1.5, 2.0, 2.5]
+  alpha_grid: [0.0, 0.25, 0.5, 0.75, 1.0]
+  solver: grid
+  knee_method: utopia
+  fuzzy_shape: trapezoidal
+  disagreement_threshold: 0.5
+perturbation_instances: 20
+n_perturbations: 3
+imputation: conditional
+grouped_background: 50
+n_jobs: 4

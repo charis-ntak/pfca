@@ -1,0 +1,22 @@
+# Phase B: public benchmarks (Section 6.2)
+datasets: null            # null uses the curated list in pfca.evaluation.datasets.BENCHMARKS
+min_features: 15
+max_features: 100
+max_rows: 5000
+n_repeats: 10
+n_explain: 200
+model_classes: [gbm, rf]  # add mlp to include a non tree model class (permutation explainer, slower)
+n_resamples: 100
+background_size: 100
+explainer: auto
+methods: [pfca, pfca_crisp, pfca_single_model, pfca_fixed, shap, bootstrapped_shap]
+pfca:
+  n_concepts_grid: [2, 3, 4, 5, 6, 8, 10, 12]
+  fuzzifier_grid: [1.5, 2.0, 2.5]
+  alpha_grid: [0.0, 0.25, 0.5, 0.75, 1.0]
+  solver: grid
+  knee_method: utopia
+perturbation_instances: 20
+n_perturbations: 3
+imputation: conditional
+n_jobs: 4

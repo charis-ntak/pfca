@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pfca"
+version = "0.1.0"
+description = "Pareto optimal fuzzy concept attribution: post hoc explanations with fuzzy concepts, fuzzy uncertainty and multiobjective selection"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Charis Ntakolia", email = "cntakolia@hafa.gr"}]
+keywords = ["explainability", "shapley", "fuzzy sets", "multiobjective optimization", "concept attribution"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "scikit-learn>=1.3",
+    "shap>=0.44",
+    "pymoo>=0.6",
+    "joblib>=1.3",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+stats = ["statsmodels>=0.14"]
+plots = ["matplotlib>=3.7"]
+baselines = ["lime>=0.2"]
+dev = ["pytest>=7.0", "pytest-cov", "statsmodels>=0.14", "matplotlib>=3.7"]
+all = ["statsmodels>=0.14", "matplotlib>=3.7", "pytest>=7.0"]
+
+[project.urls]
+Repository = "https://github.com/charis-ntak/pfca"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning", "ignore::UserWarning"]
