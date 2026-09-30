@@ -1,6 +1,6 @@
 # PFCA: Pareto optimal fuzzy concept attribution
 
-Charis Ntakolia, Department of Aeronautical Studies, Hellenic Air Force Academy, cntakolia@hafa.gr
+Charis Ntakolia (GitHub: charis-ntak), Department of Aeronautical Studies, Hellenic Air Force Academy, cntakolia@hafa.gr
 
 PFCA is a post hoc explainability method for tabular black box models. It is built on three ideas that are treated separately in the literature.
 
