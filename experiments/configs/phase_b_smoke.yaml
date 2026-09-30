@@ -1,0 +1,28 @@
+# Small configuration to check that the whole Phase B pipeline runs end to end offline
+datasets: [breast_cancer]   # built in scikit-learn dataset, 30 features, no network access needed
+min_features: 15
+max_features: 100
+max_rows: 300
+n_repeats: 2
+n_explain: 20
+seed: 0
+model_classes: [gbm]
+n_resamples: 3
+background_size: 40
+explainer: auto
+tuning_grid:
+  max_depth: [2]
+  n_estimators: [50]
+methods: [pfca, pfca_crisp, pfca_single_model, pfca_fixed, shap, bootstrapped_shap]
+pfca:
+  n_concepts_grid: [2, 3, 4]
+  fuzzifier_grid: [2.0]
+  alpha_grid: [0.0, 0.5]
+  solver: grid
+  knee_method: utopia
+perturbation_instances: 3
+n_perturbations: 1
+imputation: conditional
+grouped_background: 30
+save_explanations: false
+n_jobs: 2

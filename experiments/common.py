@@ -51,21 +51,45 @@ def prepare_run(results_dir: str | Path, name: str, config: dict) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "config.yaml", "w", encoding="utf8") as fh:
         yaml.safe_dump(config, fh, sort_keys=False)
+    seeds = {k: v for k, v in config.items() if "seed" in str(k).lower()}
     with open(out / "environment.json", "w", encoding="utf8") as fh:
-        json.dump({"versions": package_versions(), "started": time.strftime("%Y-%m-%d %H:%M:%S"), "cwd": os.getcwd(), "argv": sys.argv}, fh, indent=2)
+        json.dump({"versions": package_versions(), "started": time.strftime("%Y-%m-%d %H:%M:%S"), "cwd": os.getcwd(), "argv": sys.argv, "seeds_from_config": seeds}, fh, indent=2)
     return out
 
 
+def _serialize_value(v):
+    """Make a metric value CSV friendly: nested tables and arrays are stored as JSON strings."""
+    if isinstance(v, pd.DataFrame):
+        return json.dumps(v.to_dict(orient="list"))
+    if isinstance(v, np.ndarray):
+        return json.dumps(v.tolist())
+    if isinstance(v, (list, tuple, dict)):
+        return json.dumps(v)
+    if isinstance(v, (np.integer, np.floating, np.bool_)):
+        return v.item()
+    return v
+
+
 class ResultWriter:
-    """Append rows to a CSV file, one flush per call, with resume support keyed on chosen columns."""
+    """Append rows to a CSV file with resume support keyed on chosen columns.
+
+    Rows may carry different column sets (for example a metric that exists only
+    for some methods); the file is kept rectangular by aligning every batch to
+    the union of the columns seen so far and rewriting the file when new
+    columns appear. Nested tables (pandas data frames, arrays, lists, dicts)
+    are stored as JSON strings so that figures can be regenerated from the
+    saved files.
+    """
 
     def __init__(self, path: str | Path, key_columns: list[str]):
         self.path = Path(path)
         self.key_columns = key_columns
         self._done: set[tuple] = set()
+        self._columns: list[str] = []
         if self.path.exists():
             try:
                 prev = pd.read_csv(self.path)
+                self._columns = list(prev.columns)
                 if all(c in prev.columns for c in key_columns):
                     self._done = set(map(tuple, prev[key_columns].astype(str).itertuples(index=False, name=None)))
             except Exception:
@@ -77,15 +101,44 @@ class ResultWriter:
     def append(self, rows: list[dict]) -> None:
         if not rows:
             return
-        clean = []
-        for r in rows:
-            clean.append({k: (v if not isinstance(v, (pd.DataFrame, np.ndarray, list, tuple, dict)) else json.dumps(v if not isinstance(v, (pd.DataFrame, np.ndarray)) else (v.to_dict(orient="list") if isinstance(v, pd.DataFrame) else v.tolist()))) for k, v in r.items()})
+        clean = [{k: _serialize_value(v) for k, v in r.items()} for r in rows]
         df = pd.DataFrame(clean)
-        header = not self.path.exists()
-        df.to_csv(self.path, mode="a", header=header, index=False)
+        new_columns = [c for c in df.columns if c not in self._columns]
+        if self.path.exists() and self._columns and new_columns:
+            prev = pd.read_csv(self.path)
+            merged = pd.concat([prev, df], ignore_index=True, sort=False)
+            self._columns = list(merged.columns)
+            merged.to_csv(self.path, index=False)
+        else:
+            if not self._columns:
+                self._columns = list(df.columns)
+            df = df.reindex(columns=self._columns)
+            df.to_csv(self.path, mode="a", header=not self.path.exists(), index=False)
         for r in rows:
             if all(c in r for c in self.key_columns):
                 self._done.add(tuple(str(r[c]) for c in self.key_columns))
+
+
+class PerInstanceWriter:
+    """Long format store of per instance metric values (Section 7.3 asks for raw values per instance).
+
+    Every call appends one row per instance and metric with the identifying
+    columns of the cell, so that ``per_instance.csv`` can be aggregated in any
+    way afterwards.
+    """
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+
+    def append(self, key: dict, method: str, table: pd.DataFrame | None) -> None:
+        if table is None or len(table) == 0:
+            return
+        long = table.reset_index().rename(columns={"index": "instance"}) if "instance" not in table.columns else table.copy()
+        long = long.melt(id_vars=["instance"], var_name="metric", value_name="value")
+        for k, v in key.items():
+            long[k] = v
+        long["method"] = method
+        long.to_csv(self.path, mode="a", header=not self.path.exists(), index=False)
 
 
 def model_classes_from_names(names: list[str], task: str, seed: int):
@@ -135,5 +188,9 @@ def tune_gradient_boosting(X_tr, y_tr, X_tune, y_tune, task: str, seed: int, gri
 
 
 def flatten_row(r: dict) -> dict:
-    """Drop nested tables from a metric dictionary before writing it to the flat CSV."""
-    return {k: v for k, v in r.items() if not isinstance(v, pd.DataFrame)}
+    """Prepare a metric dictionary for the flat CSV: nested tables become JSON strings.
+
+    The per instance table (key ``per_instance``) is removed here because it is
+    written separately by :class:`PerInstanceWriter`.
+    """
+    return {k: _serialize_value(v) for k, v in r.items() if k != "per_instance"}

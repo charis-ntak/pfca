@@ -42,7 +42,11 @@ def run_cell(cell: dict, cfg: dict) -> tuple[list[dict], dict]:
     task = "regression"
     ref, ref_params, ref_score = tune_gradient_boosting(problem.X, problem.y, X_tune, y_tune, task, seed)
     classes = model_classes_from_names(cfg["model_classes"], task, seed)
-    classes[0] = ("gbm", ref.__class__(**ref.get_params()))
+    tuned = ("gbm", ref.__class__(**ref.get_params()))
+    if classes and classes[0][0] == "gbm":
+        classes[0] = tuned
+    else:
+        classes = [tuned] + [c for c in classes if c[0] != "gbm"]
     engine = AttributionEngine(model_classes=classes, n_resamples=cfg["n_resamples"], background_size=cfg["background_size"], explainer=cfg.get("explainer", "auto"), n_jobs=cfg.get("n_jobs", 1), random_state=seed)
     with measure() as b_pool:
         engine.fit(problem.X, problem.y)

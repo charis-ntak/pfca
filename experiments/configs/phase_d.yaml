@@ -1,0 +1,43 @@
+# Phase D: expert judgment study (Sections 6.4 and 7.4)
+# generate fits PFCA on one problem, renders the three explanation formats of the same
+# predictions and writes the counterbalanced response sheets; analyze reads the filled sheets.
+# The questionnaire of Phase C is the intended problem; --synthetic uses the synthetic
+# problem described under "synthetic" instead (no data file needed).
+csv_path: data/raw/questionnaire.csv
+spec_path: data/raw/questionnaire_spec.json
+synthetic:
+  family: additive
+  n_samples: 500
+  n_features: 10
+  rho: 0.6
+  tune_fraction: 0.34
+n_instances: 6            # predictions shown to every expert, in every format
+n_experts: 12             # a multiple of six keeps the balanced Latin square complete
+n_candidates: 60          # instances explained before the presented ones are chosen (balanced over the answer key)
+model_classes: [gbm, rf, mlp]
+n_resamples: 50
+background_size: 100
+explainer: auto
+pfca:
+  n_concepts_grid: [2, 3, 4, 5, 6]
+  fuzzifier_grid: [1.5, 2.0, 2.5]
+  alpha_grid: [0.0, 0.25, 0.5, 0.75, 1.0]
+  solver: grid
+  knee_method: utopia
+  disagreement_threshold: 0.5
+reliable_sign_confidence: 0.9   # question 3: a sign is reliable when the sign confidence is at least this value
+shap_top_features: 15           # features shown in the feature level bar plot
+likert_min: 1
+likert_max: 7
+ordinal_adjust_expert: true     # also fit the ordinal models with expert indicators as additional predictors
+seed: 0
+n_jobs: 2
+# used only by "analyze --simulate", which fills the response sheet with random plausible responses
+simulation:
+  expert_sd: 0.5
+  rating_sd: 1.0
+  rating_means:
+    rating_confidence_calibration: {shap: 3.5, concept: 4.0, fuzzy: 5.5}
+    rating_ease: {shap: 4.5, concept: 5.0, fuzzy: 4.5}
+    rating_actionability: {shap: 4.0, concept: 4.5, fuzzy: 5.0}
+  accuracy: {shap: 0.35, concept: 0.45, fuzzy: 0.85}

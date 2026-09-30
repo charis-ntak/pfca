@@ -1,0 +1,12 @@
+# Runtime dependencies of the pfca package (the same lower bounds as pyproject.toml).
+# Optional extras: statsmodels>=0.14 (statistical analysis), matplotlib>=3.7 (figures), pytest>=7.0 (tests);
+# install everything with: pip install -e ".[all]"
+# Exact versions used for the study are frozen in requirements-lock.txt.
+numpy>=1.24
+scipy>=1.10
+pandas>=2.0
+scikit-learn>=1.3
+shap>=0.44
+pymoo>=0.6
+joblib>=1.3
+pyyaml>=6.0

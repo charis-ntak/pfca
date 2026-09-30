@@ -1,0 +1,39 @@
+# Small configuration to check that the sensitivity pipeline (Section 7.5) runs end to end offline
+cells:
+  - {family: additive, n_samples: 200, n_features: 10, rho: 0.6}
+n_seeds: 1
+n_explain: 30
+tune_fraction: 0.34
+model_classes: [gbm, rf]
+background_size: 40
+explainer: auto
+resamples: [3, 5]
+model_class_counts: [1, 2]
+shapes: [trapezoidal, triangular]
+percentiles:
+  - {support: [5, 95], core: [25, 75]}
+  - {support: [10, 90], core: [30, 70]}
+distances: [correlation, loading]
+solvers: [grid, nsga2]
+knee_methods: [utopia, hyperplane, sparsest_within_10pct, median_complexity]
+defaults:                 # B falls back to the largest listed value and M to all available classes
+  n_resamples: 100
+  n_model_classes: 3
+  fuzzy_shape: trapezoidal
+  support_percentiles: [5, 95]
+  core_percentiles: [25, 75]
+  concept_distance: correlation
+  solver: grid
+  knee_method: utopia
+nsga_pop_size: 8
+nsga_generations: 3
+include_apriori: true
+pfca:
+  n_concepts_grid: [2, 3, 4]
+  fuzzifier_grid: [2.0]
+  alpha_grid: [0.0, 0.5, 1.0]
+  disagreement_threshold: 0.5
+perturbation_instances: 0
+n_perturbations: 0
+imputation: conditional
+n_jobs: 2

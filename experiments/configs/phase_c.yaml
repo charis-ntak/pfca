@@ -1,6 +1,8 @@
 # Phase C: psychological questionnaire with known subscales (Section 6.3)
-csv_path: data/questionnaire.csv          # not distributed; see data/README.md
-spec_path: data/questionnaire_spec.json
+# The real dataset is not distributed; place it under data/raw/ (ignored by git) and see data/README.md
+# for the CSV and JSON formats. experiments/make_demo_questionnaire.py writes a simulated file for testing.
+csv_path: data/raw/questionnaire.csv
+spec_path: data/raw/questionnaire_spec.json
 n_repeats: 10
 n_explain: 200
 model_classes: [gbm, rf, mlp]
@@ -17,5 +19,8 @@ pfca:
 perturbation_instances: 20
 n_perturbations: 3
 imputation: conditional
+grouped_background: 50
 example_instances: [0, 1, 2]
+seed: 0          # base seed; repetition r uses seed + r for the pool, the tuning and the background samples
+split_seed: 0    # seed of the repeated 60/20/20 splits
 n_jobs: 4

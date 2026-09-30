@@ -1,0 +1,25 @@
+# Small configuration to check that the whole Phase C pipeline runs end to end
+# on the simulated questionnaire (experiments/make_demo_questionnaire.py --n 300 --seed 0)
+csv_path: data/demo_questionnaire.csv
+spec_path: data/demo_questionnaire_spec.json
+n_repeats: 2
+n_explain: 20
+model_classes: [gbm, rf]
+n_resamples: 4
+background_size: 40
+explainer: auto
+methods: [pfca, pfca_apriori, pfca_crisp, pfca_single_model, shap, bootstrapped_shap, grouped_shap]
+pfca:
+  n_concepts_grid: [2, 3, 4]
+  fuzzifier_grid: [2.0]
+  alpha_grid: [0.0, 0.5, 1.0]
+  solver: grid
+  knee_method: utopia
+perturbation_instances: 3
+n_perturbations: 1
+imputation: conditional
+grouped_background: 30
+example_instances: [0, 1]
+seed: 0
+split_seed: 0
+n_jobs: 2
