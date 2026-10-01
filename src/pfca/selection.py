@@ -9,13 +9,14 @@ retained concepts weighted by the fuzziness of their memberships, and
 instability as one minus the mean rank correlation of concept importance
 across the pool. The Pareto front is obtained by exhaustive evaluation on a
 grid or by NSGA II, a default solution is selected by a knee point criterion,
-and a selection based membership of every feature and concept is derived from
-the front.
+and the selection based membership of every concept (Section 3.5), the
+proportion of distinct Pareto optimal explanations in which it is retained, is
+derived from the front together with a feature level counterpart.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Callable
 
@@ -27,8 +28,10 @@ from sklearn.linear_model import Ridge
 from sklearn.model_selection import KFold
 
 from pfca.concepts import ConceptPartition
-from pfca.fuzzification import alpha_cut_array
 from pfca.utils import concept_fuzziness
+
+SURROGATES = ("linear", "tree")
+KNEE_METHODS = ("utopia", "hyperplane")
 
 
 @dataclass(frozen=True)
@@ -71,24 +74,60 @@ class PartitionPool:
     global_quantiles: np.ndarray
 
 
+def activation_threshold(quantiles: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Alpha level above which the alpha cut of every fuzzy number excludes zero.
+
+    For a trapezoid (a, b, c, d) stored as a five quantile vector the alpha cut
+    is [a + alpha (b - a), d - alpha (d - c)]. It excludes zero for every alpha
+    when the support excludes zero (a > 0 or d < 0); for alpha above
+    -a / (b - a) when a <= 0 < b; for alpha above d / (d - c) when c < 0 <= d;
+    and for no alpha when the core contains zero. Returns the threshold (zero
+    when the support excludes zero, infinity when the core contains zero) and a
+    boolean array which is True when the support excludes zero, that is when the
+    number is active at alpha equal to zero as well. A number is active at
+    alpha exactly when the support excludes zero or the threshold is smaller
+    than alpha.
+    """
+    Q = np.asarray(quantiles, dtype=float)
+    a, b, c, d = Q[..., 0], Q[..., 1], Q[..., 3], Q[..., 4]
+    always = (a > 0.0) | (d < 0.0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        t_lo = np.where(b > 0.0, -a / np.where(b > 0.0, b - a, 1.0), np.inf)
+        t_hi = np.where(c < 0.0, d / np.where(c < 0.0, d - c, 1.0), np.inf)
+    threshold = np.where(always, 0.0, np.minimum(t_lo, t_hi))
+    return threshold, always
+
+
 def retained_concepts(quantiles: np.ndarray, global_quantiles: np.ndarray, alpha: float, sparsity: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Apply the alpha cut and the sparsity cap.
 
     A concept is active for an instance when the alpha cut of its fuzzy
     attribution excludes zero. Concepts active for at least one instance pass
-    the cut; they are ranked by the lower endpoint of the alpha cut of their
-    fuzzy global importance and the first ``sparsity`` are retained.
+    the cut. Passing concepts are ranked by the alpha level at which they first
+    become active for some instance (``activation_threshold`` minimized over
+    instances, concepts whose support excludes zero for some instance first),
+    ties are broken by decreasing median global importance and then by concept
+    index, and the first ``sparsity`` concepts of that ranking are retained.
+
+    The ranking key does not depend on alpha and every concept that passes at
+    a lower alpha level ranks ahead of every concept that enters at a higher
+    level, so for a fixed sparsity the retained set at alpha is a subset of the
+    retained set at any larger alpha. Property 6 of the guide (complexity cannot
+    decrease when alpha increases) therefore holds for every sparsity level and
+    every partition, and not only for the count of retained concepts.
 
     Returns the retained concept indices in rank order, the activity of every
     concept (fraction of instances for which it is active) and the passing mask.
     """
-    lo, hi = alpha_cut_array(quantiles, alpha)
-    active = (lo > 0.0) | (hi < 0.0)
+    alpha = float(np.clip(alpha, 0.0, 1.0))
+    threshold, always = activation_threshold(quantiles)
+    active = always | (threshold < alpha)
     activity = active.mean(axis=0)
     passing = activity > 0.0
-    glo, _ = alpha_cut_array(global_quantiles, alpha)
-    K = quantiles.shape[1]
-    order = np.lexsort((-activity, -glo))
+    concept_threshold = threshold.min(axis=0)
+    concept_always = always.any(axis=0)
+    median_importance = np.asarray(global_quantiles, dtype=float)[..., 2]
+    order = np.lexsort((-median_importance, ~concept_always, concept_threshold))
     order = np.array([k for k in order if passing[k]], dtype=int)
     retained = order[: max(int(sparsity), 0)]
     return retained, activity, passing
@@ -115,7 +154,10 @@ def fidelity_loss(
     Returns the cross validated mean squared error divided by the variance of
     the output, that is one minus the cross validated R squared. When no
     concept is retained the surrogate is the constant mean and the loss is one.
+    An unknown surrogate is rejected before any evaluation.
     """
+    if surrogate not in SURROGATES:
+        raise ValueError("surrogate must be 'linear' or 'tree'")
     output = np.asarray(output, dtype=float)
     n = output.shape[0]
     var = float(np.var(output))
@@ -131,10 +173,8 @@ def fidelity_loss(
     for tr, te in kf.split(Z):
         if surrogate == "linear":
             mdl = Ridge(alpha=1e-6)
-        elif surrogate == "tree":
-            mdl = GradientBoostingRegressor(n_estimators=100, max_depth=2, random_state=random_state)
         else:
-            raise ValueError("surrogate must be 'linear' or 'tree'")
+            mdl = GradientBoostingRegressor(n_estimators=100, max_depth=2, random_state=random_state)
         mdl.fit(Z[tr], output[tr])
         pred = mdl.predict(Z[te])
         sse += float(np.sum((output[te] - pred) ** 2))
@@ -229,14 +269,48 @@ def knee_point(F: np.ndarray, mask: np.ndarray | None = None, method: str = "uto
     raise ValueError("method must be 'utopia' or 'hyperplane'")
 
 
-def selection_membership(configs: list[ExplanationConfiguration], retained_sets: list[np.ndarray], partitions: dict[str, ConceptPartition], mask: np.ndarray) -> np.ndarray:
-    """Selection based membership of every feature.
+def explanation_key(config: ExplanationConfiguration, retained: np.ndarray) -> tuple:
+    """Identity of the explanation produced by a configuration: its partition and retained set.
 
-    For every Pareto optimal configuration a feature is retained with degree
-    equal to its total membership in the retained concepts; the selection
-    membership is the mean of that degree over the front and lies in [0, 1].
+    Two configurations of the same partition that retain the same concepts,
+    for example two alpha levels between which no activation boundary lies or
+    a declared sparsity above the number of passing concepts, produce the same
+    explanation and the same objective vector.
     """
-    idx = np.where(mask)[0]
+    return (config.partition, tuple(sorted(int(k) for k in np.asarray(retained, dtype=int))))
+
+
+def representative_mask(configs: list[ExplanationConfiguration], retained_sets: list[np.ndarray], mask: np.ndarray) -> np.ndarray:
+    """Mark the first row of every distinct explanation among the rows selected by ``mask``."""
+    mask = np.asarray(mask, dtype=bool)
+    rep = np.zeros(mask.shape[0], dtype=bool)
+    seen = set()
+    for i in np.where(mask)[0]:
+        key = explanation_key(configs[i], retained_sets[i])
+        if key not in seen:
+            seen.add(key)
+            rep[i] = True
+    return rep
+
+
+def selection_membership(configs: list[ExplanationConfiguration], retained_sets: list[np.ndarray], partitions: dict[str, ConceptPartition], mask: np.ndarray) -> np.ndarray:
+    """Feature level counterpart of the selection based membership.
+
+    For every distinct Pareto optimal explanation (one representative per
+    partition and retained set among the rows selected by ``mask``, see
+    ``representative_mask``) a feature is retained with degree equal to its
+    total membership in the retained concepts; the feature selection membership
+    is the mean of that degree over the distinct explanations and lies in
+    [0, 1]. Counting distinct explanations rather than rows makes the value
+    independent of the alpha grid and of the number of alpha values that an
+    optimizer happens to sample for the same explanation.
+
+    This is a feature level derived quantity and not the concept membership of
+    Section 3.5 of the guide, which is computed by
+    ``concept_selection_membership_on_front``.
+    """
+    rep = representative_mask(configs, retained_sets, mask)
+    idx = np.where(rep)[0]
     if idx.size == 0:
         raise ValueError("Empty Pareto front.")
     d = next(iter(partitions.values())).n_features
@@ -249,8 +323,53 @@ def selection_membership(configs: list[ExplanationConfiguration], retained_sets:
     return np.clip(acc / idx.size, 0.0, 1.0)
 
 
+def concept_selection_membership_on_front(configs: list[ExplanationConfiguration], retained_sets: list[np.ndarray], partitions: dict[str, ConceptPartition], mask: np.ndarray) -> dict[str, np.ndarray]:
+    """Selection based membership of the concepts of every candidate partition (Section 3.5).
+
+    The membership of concept k of partition U is the proportion of distinct
+    Pareto optimal explanations in which the concept is retained. An
+    explanation of the same partition contributes the indicator that k belongs
+    to its retained set. An explanation of another partition, whose concepts
+    are different objects, contributes the degree to which k overlaps its
+    retained concepts, the membership weighted mean over features of the total
+    membership of the feature in the retained concepts of that partition,
+    sum_j u_jk sum_{r retained} u'_jr divided by sum_j u_jk. With a single
+    candidate partition the value is exactly the proportion of the guide, for
+    crisp and for fuzzy partitions alike. Returns a dictionary from partition
+    name to an array of shape (K,) with values in [0, 1].
+    """
+    rep = representative_mask(configs, retained_sets, mask)
+    idx = np.where(rep)[0]
+    if idx.size == 0:
+        raise ValueError("Empty Pareto front.")
+    out: dict[str, np.ndarray] = {}
+    for name, part in partitions.items():
+        U = part.U
+        mass = U.sum(axis=0)
+        mass = np.where(mass <= 0, 1.0, mass)
+        acc = np.zeros(part.n_concepts)
+        for i in idx:
+            r = np.asarray(retained_sets[i], dtype=int)
+            if configs[i].partition == name:
+                acc[r] += 1.0
+            elif r.size:
+                degree = partitions[configs[i].partition].U[:, r].sum(axis=1)
+                acc += (U * degree[:, None]).sum(axis=0) / mass
+        out[name] = np.clip(acc / idx.size, 0.0, 1.0)
+    return out
+
+
 def concept_selection_membership(U: np.ndarray, feature_membership: np.ndarray) -> np.ndarray:
-    """Membership weighted average of feature selection memberships per concept."""
+    """Membership weighted average of feature selection memberships per concept.
+
+    This maps the feature level quantity of ``selection_membership`` back to the
+    concepts of a partition U. For a fuzzy partition the round trip through U
+    mixes concepts, so the result equals the Section 3.5 membership only when U
+    is crisp; the Section 3.5 membership of every candidate partition is
+    computed directly on the front by ``concept_selection_membership_on_front``
+    and stored in ``SelectionResult.concept_selection_memberships``, which is
+    the value to report.
+    """
     mass = U.sum(axis=0)
     mass = np.where(mass <= 0, 1.0, mass)
     return np.clip((U * feature_membership[:, None]).sum(axis=0) / mass, 0.0, 1.0)
@@ -258,6 +377,15 @@ def concept_selection_membership(U: np.ndarray, feature_membership: np.ndarray) 
 
 @dataclass
 class SelectionResult:
+    """Evaluated configurations, Pareto front, knee point and selection memberships.
+
+    ``table`` has one row per evaluated configuration with the columns of the
+    configuration, the three objectives, ``retained``, ``feasible``,
+    ``pareto``, ``representative`` (the first front row of every distinct
+    explanation) and ``knee``. ``concept_selection_memberships`` maps every
+    candidate partition name to the Section 3.5 membership of its concepts.
+    """
+
     table: pd.DataFrame
     configurations: list[ExplanationConfiguration]
     retained_sets: list[np.ndarray]
@@ -265,14 +393,28 @@ class SelectionResult:
     pareto: np.ndarray
     knee: int
     feature_selection_membership: np.ndarray
+    concept_selection_memberships: dict[str, np.ndarray] = field(default_factory=dict)
+    representative: np.ndarray | None = None
 
     @property
     def front(self) -> pd.DataFrame:
+        """Every Pareto optimal row; duplicates of one explanation are flagged by ``representative``."""
         return self.table[self.table["pareto"]].copy()
+
+    @property
+    def distinct_front(self) -> pd.DataFrame:
+        """One row per distinct Pareto optimal explanation (partition and retained set)."""
+        if "representative" not in self.table.columns:
+            return self.front
+        return self.table[self.table["pareto"] & self.table["representative"]].copy()
 
     @property
     def knee_configuration(self) -> ExplanationConfiguration:
         return self.configurations[self.knee]
+
+    def concept_membership(self, partition: str) -> np.ndarray:
+        """Section 3.5 selection membership of the concepts of the named partition."""
+        return self.concept_selection_memberships[partition]
 
 
 class ParetoSelector:
@@ -281,12 +423,14 @@ class ParetoSelector:
     Parameters
     ----------
     alpha_grid : iterable of float
+        Alpha levels in [0, 1]; a value outside the unit interval is rejected.
     sparsity_grid : iterable of int or None
         Candidate numbers of retained concepts; None uses 1 to K.
     solver : {'grid', 'nsga2'}
     knee_method : {'utopia', 'hyperplane'}
     surrogate : {'linear', 'tree'}
     cv : int
+        Number of folds of the fidelity surrogate, at least two.
     nsga_pop_size, nsga_generations : int
     random_state : int or None
     """
@@ -304,24 +448,39 @@ class ParetoSelector:
         random_state: int | None = 0,
     ):
         self.alpha_grid = tuple(float(a) for a in alpha_grid)
+        if any(not (0.0 <= a <= 1.0) for a in self.alpha_grid):
+            raise ValueError(f"Every alpha level must lie in [0, 1], got {self.alpha_grid}.")
         self.sparsity_grid = None if sparsity_grid is None else tuple(int(s) for s in sparsity_grid)
+        if knee_method not in KNEE_METHODS:
+            raise ValueError("knee_method must be 'utopia' or 'hyperplane'")
+        if surrogate not in SURROGATES:
+            raise ValueError("surrogate must be 'linear' or 'tree'")
+        if int(cv) < 2:
+            raise ValueError("cv must be at least 2.")
         self.solver = solver
         self.knee_method = knee_method
         self.surrogate = surrogate
-        self.cv = cv
+        self.cv = int(cv)
         self.nsga_pop_size = nsga_pop_size
         self.nsga_generations = nsga_generations
         self.random_state = random_state
 
     # ------------------------------------------------------------------
-    def evaluate(self, pp: PartitionPool, sparsity: int, alpha: float, output: np.ndarray) -> tuple[np.ndarray, np.ndarray, dict]:
-        retained, activity, passing = retained_concepts(pp.quantiles, pp.global_quantiles, alpha, sparsity)
+    def _objectives(self, pp: PartitionPool, retained: np.ndarray, output: np.ndarray) -> np.ndarray:
+        """The three objectives of Equation 4 for a retained set; they depend on alpha only through that set."""
         medians = pp.quantiles[..., 2]
         f1 = fidelity_loss(medians, retained, output, self.surrogate, self.cv, self.random_state)
         f2 = complexity(pp.partition.U, retained)
         f3 = instability(pp.pool, retained, random_state=self.random_state)
-        info = {"n_retained": int(retained.size), "n_passing": int(passing.sum()), "mean_activity": float(activity[retained].mean()) if retained.size else 0.0}
-        return retained, np.array([f1, f2, f3]), info
+        return np.array([f1, f2, f3])
+
+    @staticmethod
+    def _info(retained: np.ndarray, activity: np.ndarray, passing: np.ndarray) -> dict:
+        return {"n_retained": int(retained.size), "n_passing": int(passing.sum()), "mean_activity": float(activity[retained].mean()) if retained.size else 0.0}
+
+    def evaluate(self, pp: PartitionPool, sparsity: int, alpha: float, output: np.ndarray) -> tuple[np.ndarray, np.ndarray, dict]:
+        retained, activity, passing = retained_concepts(pp.quantiles, pp.global_quantiles, alpha, sparsity)
+        return retained, self._objectives(pp, retained, output), self._info(retained, activity, passing)
 
     def _finish(self, configs, retained_sets, F, infos, partitions) -> SelectionResult:
         F = np.asarray(F, dtype=float)
@@ -332,6 +491,7 @@ class ParetoSelector:
         Ff[~feasible] = np.inf
         mask = pareto_mask(Ff) & feasible
         knee = knee_point(Ff, mask, self.knee_method)
+        rep = representative_mask(configs, retained_sets, mask)
         rows = []
         for i, (cfg, r, f, info) in enumerate(zip(configs, retained_sets, F, infos)):
             row = cfg.as_dict()
@@ -340,11 +500,13 @@ class ParetoSelector:
             row["retained"] = tuple(int(k) for k in r)
             row["feasible"] = bool(feasible[i])
             row["pareto"] = bool(mask[i])
+            row["representative"] = bool(rep[i])
             row["knee"] = i == knee
             rows.append(row)
         table = pd.DataFrame(rows)
         fsm = selection_membership(configs, retained_sets, partitions, mask)
-        return SelectionResult(table, configs, retained_sets, F, mask, knee, fsm)
+        csm = concept_selection_membership_on_front(configs, retained_sets, partitions, mask)
+        return SelectionResult(table, configs, retained_sets, F, mask, knee, fsm, csm, rep)
 
     def run_grid(self, pools: dict[str, PartitionPool], output: np.ndarray) -> SelectionResult:
         configs, retained_sets, F, infos = [], [], [], []
@@ -360,6 +522,8 @@ class ParetoSelector:
                     retained_sets.append(r)
                     F.append(f)
                     infos.append(info)
+        if not configs:
+            raise ValueError("No configuration to evaluate: check the pools and sparsity_grid against the number of concepts of every partition.")
         partitions = {name: pp.partition for name, pp in pools.items()}
         return self._finish(configs, retained_sets, F, infos, partitions)
 
@@ -375,7 +539,18 @@ class ParetoSelector:
 
         ``pool_provider(K, fuzzifier, source)`` must return the PartitionPool of
         the requested candidate; sources are 'fcm' or one of ``extra_partitions``
-        (for example 'apriori'), whose K and fuzzifier are ignored.
+        (for example 'apriori'), whose K and fuzzifier are ignored. The sparsity
+        variable is bounded by the largest number of concepts among all
+        candidate sources, so that an extra partition with more concepts than
+        the upper bound of K can be retained in full; the effective sparsity is
+        clipped to the number of concepts of the partition actually evaluated.
+        Alpha is rounded to three decimals once, and the rounded value is used
+        for the archive key, for the evaluation and for the stored
+        configuration, so that the table, the objectives and an explanation
+        rebuilt from the stored configuration refer to the same alpha. The
+        objectives depend on alpha only through the retained set, so they are
+        computed once per distinct explanation (partition and retained set)
+        and shared by every configuration that produces it.
         """
         from pymoo.algorithms.moo.nsga2 import NSGA2
         from pymoo.core.mixed import MixedVariableDuplicateElimination, MixedVariableMating, MixedVariableSampling
@@ -384,20 +559,27 @@ class ParetoSelector:
         from pymoo.optimize import minimize
 
         selector = self
-        Kmin, Kmax = n_concepts_bounds
+        Kmin, Kmax = int(n_concepts_bounds[0]), int(n_concepts_bounds[1])
         sources = ("fcm",) + tuple(extra_partitions)
+        first_fuzzifier = fuzzifier_options[0] if len(fuzzifier_options) else None
+        s_max = max([Kmax] + [int(pool_provider(Kmin, first_fuzzifier, src).partition.n_concepts) for src in extra_partitions])
         evaluated: dict[tuple, tuple] = {}
+        scored: dict[tuple, np.ndarray] = {}
         partitions: dict[str, ConceptPartition] = {}
 
         def eval_key(source, K, m, s, alpha):
             pp = pool_provider(K, m, source)
             Kp = pp.partition.n_concepts
             s_eff = int(min(max(s, 1), Kp))
-            key = (pp.partition.name, s_eff, round(float(alpha), 3))
+            alpha_r = round(float(alpha), 3)
+            key = (pp.partition.name, s_eff, alpha_r)
             if key not in evaluated:
-                r, f, info = selector.evaluate(pp, s_eff, float(alpha), output)
-                cfg = ExplanationConfiguration(pp.partition.name, Kp, pp.partition.fuzzifier, s_eff, round(float(alpha), 3))
-                evaluated[key] = (cfg, r, f, info)
+                r, activity, passing = retained_concepts(pp.quantiles, pp.global_quantiles, alpha_r, s_eff)
+                cfg = ExplanationConfiguration(pp.partition.name, Kp, pp.partition.fuzzifier, s_eff, alpha_r)
+                ekey = explanation_key(cfg, r)
+                if ekey not in scored:
+                    scored[ekey] = selector._objectives(pp, r, output)
+                evaluated[key] = (cfg, r, scored[ekey], selector._info(r, activity, passing))
                 partitions[pp.partition.name] = pp.partition
             return evaluated[key]
 
@@ -407,7 +589,7 @@ class ParetoSelector:
                     "source": Choice(options=list(sources)),
                     "K": Integer(bounds=(Kmin, Kmax)),
                     "m": Choice(options=list(fuzzifier_options)),
-                    "s": Integer(bounds=(1, Kmax)),
+                    "s": Integer(bounds=(1, s_max)),
                     "alpha": Real(bounds=(0.0, 1.0)),
                 }
                 super().__init__(vars=variables, n_obj=3)

@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import ResultWriter, flatten_row, load_config, model_classes_from_names, prepare_run, tune_gradient_boosting  # noqa: E402
+from common import PerInstanceWriter, ResultWriter, flatten_row, load_config, model_classes_from_names, prepare_run, tune_gradient_boosting  # noqa: E402
 
 from pfca.attribution import AttributionEngine, output_function, shapley_values  # noqa: E402
 from pfca.evaluation import protocol  # noqa: E402
@@ -48,7 +48,8 @@ def run_cell(cell: dict, cfg: dict) -> tuple[list[dict], dict]:
     else:
         classes = [tuned] + [c for c in classes if c[0] != "gbm"]
     engine = AttributionEngine(model_classes=classes, n_resamples=cfg["n_resamples"], background_size=cfg["background_size"], explainer=cfg.get("explainer", "auto"), n_jobs=cfg.get("n_jobs", 1), random_state=seed)
-    with measure() as b_pool:
+    trace = bool(cfg.get("trace_memory", False))
+    with measure(trace_memory=trace) as b_pool:
         engine.fit(problem.X, problem.y)
         attr = engine.explain(X_explain)
     # replicated attribution from a fresh training sample (calibration metrics)
@@ -72,22 +73,27 @@ def run_cell(cell: dict, cfg: dict) -> tuple[list[dict], dict]:
     pfca_kwargs["n_concepts_grid"] = tuple(k for k in pfca_kwargs.get("n_concepts_grid", (2, 3, 4, 5, 6)) if k < problem.n_features)
     outputs = {}
     rows = []
+    per_instance = []
+    matched: dict[str, int] = {}
     for name in cfg["methods"]:
         try:
             if name in protocol.PFCA_VARIANTS:
-                out = protocol.pfca_output(name, engine, attr, problem.feature_names, pfca_kwargs, groups)
+                out = protocol.pfca_output(name, engine, attr, problem.feature_names, pfca_kwargs, groups, trace_memory=trace)
+                if name == "pfca":
+                    matched = protocol.matched_sparsity(out)
             elif name == "shap":
-                out = protocol.shap_output(engine, attr, task, wall=b_pool.wall_seconds / (engine.n_resamples * len(classes)))
+                out = protocol.shap_output(engine, attr, task, wall=b_pool.wall_seconds / (engine.n_resamples * len(classes)), n_retained=matched.get("feature"))
             elif name == "bootstrapped_shap":
-                out = protocol.bootstrapped_shap_output(engine, attr, wall=b_pool.wall_seconds / len(classes))
+                out = protocol.bootstrapped_shap_output(engine, attr, wall=b_pool.wall_seconds / len(classes), n_retained=matched.get("feature"))
             elif name == "grouped_shap":
-                out = protocol.grouped_shap_output(engine, attr, X_explain, groups, task, background_size=cfg.get("grouped_background", 50), random_state=seed)
+                out = protocol.grouped_shap_output(engine, attr, X_explain, groups, task, background_size=cfg.get("grouped_background"), random_state=seed, n_retained=matched.get("concept"), trace_memory=trace)
             elif name == "integrated_gradients":
-                out = protocol.integrated_gradients_output(engine, X_explain, task)
+                out = protocol.integrated_gradients_output(engine, X_explain, task, trace_memory=trace)
             else:
                 raise ValueError(f"unknown method {name}")
             outputs[name] = out
             r = protocol.evaluate(out, ctx)
+            per_instance.append((name, r.get("per_instance")))
         except Exception as exc:  # record the failure and continue with the other methods
             traceback.print_exc()
             r = {"method": name, "error": f"{type(exc).__name__}: {exc}"}
@@ -115,7 +121,7 @@ def run_cell(cell: dict, cfg: dict) -> tuple[list[dict], dict]:
                 elif name == "bootstrapped_shap":
                     before = protocol.bootstrapped_shap_output(base_engine, base_attr)
                 elif name == "grouped_shap":
-                    before = protocol.grouped_shap_output(base_engine, base_attr, X_explain[:, keep], base_groups, task, background_size=cfg.get("grouped_background", 50), random_state=seed)
+                    before = protocol.grouped_shap_output(base_engine, base_attr, X_explain[:, keep], base_groups, task, background_size=cfg.get("grouped_background"), random_state=seed)
                 else:
                     continue
                 change = protocol.duplication_change(before, out, src, pos, problem.true_membership)
@@ -127,7 +133,7 @@ def run_cell(cell: dict, cfg: dict) -> tuple[list[dict], dict]:
                 for r in rows:
                     if r["method"] == name:
                         r["duplication_error"] = f"{type(exc).__name__}: {exc}"
-    return rows, {"cell": cell}
+    return rows, {"cell": cell, "per_instance": per_instance}
 
 
 def main(argv=None):
@@ -143,6 +149,7 @@ def main(argv=None):
     cfg = load_config(args.config, {"n_jobs": args.n_jobs, "n_seeds": args.seeds})
     out_dir = prepare_run(args.results, args.name, cfg)
     writer = ResultWriter(out_dir / "metrics.csv", ["family", "n_samples", "n_features", "rho", "seed", "method"])
+    per_instance_writer = PerInstanceWriter(out_dir / "per_instance.csv")
     cells = phase_a_grid(cfg["families"], cfg["n_samples"], cfg["n_features"], cfg["rhos"], cfg["n_seeds"])
     if args.only_family:
         cells = [c for c in cells if c["family"] == args.only_family]
@@ -154,8 +161,10 @@ def main(argv=None):
         if all(writer.is_done({**cell, "method": m}) for m in cfg["methods"]):
             continue
         t = time.time()
-        rows, _ = run_cell(cell, cfg)
+        rows, extra = run_cell(cell, cfg)
         writer.append(rows)
+        for method, table in extra["per_instance"]:
+            per_instance_writer.append(cell, method, table)
         print(f"[phase A] cell {i + 1}/{len(cells)} {cell} done in {time.time() - t:.1f}s (elapsed {time.time() - t0:.0f}s)", flush=True)
     print("[phase A] finished")
 

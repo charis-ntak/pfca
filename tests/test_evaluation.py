@@ -219,3 +219,122 @@ def test_budget():
     with budget.measure() as b:
         _ = np.ones(10000)
     assert b.wall_seconds >= 0 and b.peak_python_mb >= 0
+
+
+def test_make_synthetic_validates_arguments():
+    kw = dict(n_samples=50, n_features=6, n_factors=2, random_state=0)
+    for bad in (-0.1, 1.1):
+        with pytest.raises(ValueError, match="rho"):
+            make_synthetic("additive", rho=bad, **kw)
+    for ok in (0.0, 1.0):
+        p = make_synthetic("additive", rho=ok, **kw)
+        assert np.isfinite(p.X).all() and np.isfinite(p.y).all()
+    with pytest.raises(ValueError, match="coefficients"):
+        make_synthetic("additive", rho=0.5, coefficients=[1.0], **kw)
+    with pytest.raises(ValueError, match="link"):
+        make_synthetic("additive", rho=0.5, links=["linear", "exp"], **kw)
+    with pytest.raises(ValueError, match="link"):
+        make_synthetic("additive", rho=0.5, links=["linear"], **kw)
+
+
+def test_rank_recovery_aggregates_attributions_before_absolute_value():
+    # Feature level attribution whose block sums equal the true factor attributions exactly,
+    # with the first block split into contributions of opposite signs.
+    p = make_synthetic("additive", n_samples=200, n_features=9, rho=0.5, n_factors=3, random_state=0, nonlinear=False, coefficients=[1.0, 1.6, 0.4])
+    A = p.true_concept_attributions(p.X)
+    U_true = p.true_membership
+    phi = np.zeros((200, 9))
+    phi[:, 0:3] = A[:, [0]] * np.array([1.6, -0.3, -0.3])
+    phi[:, 3:6] = A[:, [1]] / 3.0
+    phi[:, 6:9] = A[:, [2]] / 3.0
+    assert metrics.feature_level_recovery_error(phi, A, U_true) == pytest.approx(0.0, abs=1e-12)
+    true_imp = p.true_global_importance(p.X)
+    # attribution matrix: the mapped attributions are summed before the absolute value
+    assert metrics.rank_recovery(phi, true_imp, np.eye(9), U_true) == 1.0
+    # the same matrix without memberships reduces to the mean absolute attribution per column
+    assert metrics.rank_recovery(A, true_imp) == 1.0
+    assert metrics.rank_recovery(np.abs(A).mean(axis=0), true_imp) == 1.0
+    # importances alone remain accepted; summing per concept importances inflates the split block
+    assert metrics.rank_recovery(np.abs(phi).mean(axis=0), true_imp, np.eye(9), U_true) == pytest.approx(0.5)
+    with pytest.raises(ValueError):
+        metrics.rank_recovery(np.zeros((2, 2, 2)), true_imp)
+
+
+def test_conditional_imputation_ignores_constant_background_columns():
+    rng = np.random.default_rng(0)
+    bg = rng.normal(size=(200, 4))
+    bg[:, 3] = 1.0
+    Xq = rng.normal(size=(5, 4))
+    Xq[:, 3] = 0.0
+    w = np.zeros((5, 4))
+    w[:, 0] = 1.0
+    imputed = metrics._impute(Xq, w, bg, "conditional", np.random.default_rng(0), k_neighbors=10)
+    # reference k nearest neighbors on the informative kept features 1 and 2
+    sd = bg[:, 1:3].std(axis=0)
+    expected = []
+    for i in range(5):
+        dist = (((bg[:, 1:3] - Xq[i, 1:3]) / sd) ** 2).sum(axis=1)
+        expected.append(bg[np.argsort(dist)[:10], 0].mean())
+    np.testing.assert_allclose(imputed[:, 0], expected)
+    np.testing.assert_allclose(imputed[:, 1:], Xq[:, 1:])
+    assert np.ptp(imputed[:, 0]) > 0.05
+    # a query whose only kept features are constant in the background receives the background mean
+    w_all = np.ones((1, 4))
+    w_all[0, 3] = 0.0
+    np.testing.assert_allclose(metrics._impute(Xq[:1], w_all, bg, "conditional", np.random.default_rng(0))[0, :3], bg[:, :3].mean(axis=0))
+
+
+def test_marginal_curves_reuse_replacement_rows():
+    p = make_synthetic("additive", n_samples=300, n_features=6, rho=0.6, n_factors=2, random_state=1, nonlinear=False)
+    A = p.true_concept_attributions(p.X[:20])
+    order = np.argsort(-np.abs(A), axis=1)
+    for draws in (1, 10):
+        r = metrics.deletion_insertion_curves(p.true_function, p.X[:20], p.X[100:300], p.true_membership, order, mode="marginal", marginal_draws=draws)
+        assert r["deletion_curve"][0] == pytest.approx(1.0)
+        assert r["deletion_curve"][-1] == pytest.approx(0.0, abs=1e-12)
+        assert r["insertion_curve"][0] == 0.0
+        assert r["insertion_curve"][-1] == pytest.approx(1.0)
+        assert np.all(np.isfinite(r["deletion_curve"])) and np.all(np.isfinite(r["insertion_curve"]))
+    r1 = metrics.deletion_insertion_curves(p.true_function, p.X[:20], p.X[100:300], p.true_membership, order, mode="marginal", random_state=3)
+    r2 = metrics.deletion_insertion_curves(p.true_function, p.X[:20], p.X[100:300], p.true_membership, order, mode="marginal", random_state=3)
+    assert r1["deletion_auc"] == r2["deletion_auc"] and r1["insertion_auc"] == r2["insertion_auc"]
+
+
+def test_curves_use_a_common_scale_across_instances():
+    # Additive model with a zero background: removing a concept sets its feature to zero, so the
+    # curves are known in closed form. The second instance has a total effect of zero with two
+    # large contributions of opposite sign; a per instance normalization would let it dominate.
+    beta = np.array([1.0, 1.0])
+    X = np.array([[2.0, 0.5], [1.0, -1.0], [-0.5, -2.0]])
+    bg = np.zeros((5, 2))
+    U = np.eye(2)
+    c = X * beta
+    order = np.argsort(-np.abs(c), axis=1)
+    r = metrics.deletion_insertion_curves(lambda Z: Z @ beta, X, bg, U, order, mode="conditional")
+    total = c.sum(axis=1)
+    scale = np.abs(total).mean()
+    sign = np.where(total >= 0, 1.0, -1.0)
+    first = c[np.arange(3), order[:, 0]]
+    del_curve = np.stack([total, total - first, np.zeros(3)], axis=1) * sign[:, None] / scale
+    ins_curve = np.stack([np.zeros(3), first, total], axis=1) * sign[:, None] / scale
+    np.testing.assert_allclose(r["deletion_curve"], del_curve.mean(axis=0))
+    np.testing.assert_allclose(r["insertion_curve"], ins_curve.mean(axis=0))
+    area = lambda C: ((C[:, 0] + 2 * C[:, 1] + C[:, 2]) / 4).mean()  # trapezoid rule with step one half
+    assert r["deletion_auc"] == pytest.approx(area(del_curve))
+    assert r["insertion_auc"] == pytest.approx(area(ins_curve))
+    assert r["deletion_curve"][0] == pytest.approx(1.0) and r["deletion_curve"][-1] == pytest.approx(0.0, abs=1e-12)
+    assert r["insertion_curve"][0] == 0.0 and r["insertion_curve"][-1] == pytest.approx(1.0)
+    # the zero effect instance contributes a bounded value, not a clipped one
+    assert abs(del_curve[1, 1]) == pytest.approx(1.0 / scale)
+    assert np.all(np.abs(del_curve) <= np.abs(c).sum(axis=1).max() / scale)
+
+
+def test_surrogate_fidelity_checks_row_alignment():
+    rng = np.random.default_rng(0)
+    Z = rng.normal(size=(40, 2))
+    y = Z @ np.array([1.0, 2.0])
+    assert metrics.surrogate_fidelity(Z, y) > 0.99
+    with pytest.raises(ValueError, match="same number of rows"):
+        metrics.surrogate_fidelity(Z, np.concatenate([y, y[:20]]))
+    with pytest.raises(ValueError, match="same number of rows"):
+        metrics.surrogate_fidelity(Z, y[:30])

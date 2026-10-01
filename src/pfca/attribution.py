@@ -11,6 +11,7 @@ reference model, which is required for the exact reduction to SHAP.
 
 from __future__ import annotations
 
+import numbers
 import warnings
 from dataclasses import dataclass, field
 from typing import Callable, Sequence
@@ -27,9 +28,15 @@ from sklearn.ensemble import (
 from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.utils.multiclass import type_of_target
 
 from pfca.utils import make_rng, spawn_seeds
 
+# Model classes explained with TreeSHAP. The histogram based gradient boosting
+# estimators of scikit learn are deliberately absent: shap evaluates their trees
+# on the raw split thresholds rather than on the binned values used by the
+# model, so local accuracy fails for them, and they are explained through the
+# model agnostic branches instead.
 TREE_TYPES = (
     "GradientBoostingRegressor",
     "GradientBoostingClassifier",
@@ -39,8 +46,6 @@ TREE_TYPES = (
     "ExtraTreesClassifier",
     "DecisionTreeRegressor",
     "DecisionTreeClassifier",
-    "HistGradientBoostingRegressor",
-    "HistGradientBoostingClassifier",
     "XGBRegressor",
     "XGBClassifier",
     "LGBMRegressor",
@@ -93,15 +98,52 @@ def _final_estimator(model):
     return model
 
 
-def output_function(model, task: str, target_class: int = 1) -> Callable[[np.ndarray], np.ndarray]:
+def _estimator_task(model) -> str | None:
+    """Task implied by an estimator: 'classification', 'regression' or None when unknown.
+
+    scikit learn's is_classifier sees through pipelines. Objects that are not
+    scikit learn estimators and do not expose ``_estimator_type`` give None,
+    and the task is then inferred from the target values.
+    """
+    try:
+        return "classification" if is_classifier(model) else "regression"
+    except Exception:
+        pass
+    kind = getattr(_final_estimator(model), "_estimator_type", None)
+    if kind is None:
+        return None
+    return "classification" if kind == "classifier" else "regression"
+
+
+def _class_column(classes, target_class) -> int:
+    """Column of predict_proba that corresponds to ``target_class``.
+
+    ``target_class`` is matched first as one of the class labels; otherwise it
+    must be an integer index into the sorted classes. A ValueError naming the
+    available classes is raised when neither interpretation applies.
+    """
+    classes = np.asarray(list(classes)).tolist()
+    for i, c in enumerate(classes):
+        try:
+            if bool(c == target_class):
+                return i
+        except Exception:
+            continue
+    if isinstance(target_class, numbers.Integral) and 0 <= int(target_class) < len(classes):
+        return int(target_class)
+    raise ValueError(f"target_class {target_class!r} is neither one of the classes {classes} nor an index into them.")
+
+
+def output_function(model, task: str, target_class=1) -> Callable[[np.ndarray], np.ndarray]:
     """Return the scalar function that is explained.
 
     Regressors are explained through predict; classifiers through the
-    predicted probability of the target class.
+    predicted probability of the target class, which is given either as one of
+    the class labels of the fitted estimator or as an index into its sorted
+    classes.
     """
     if task == "classification":
-        classes = list(getattr(_final_estimator(model), "classes_", [0, 1]))
-        col = classes.index(target_class) if target_class in classes else min(target_class, len(classes) - 1)
+        col = _class_column(getattr(_final_estimator(model), "classes_", [0, 1]), target_class)
 
         def g(Z):
             return np.asarray(model.predict_proba(np.asarray(Z)))[:, col]
@@ -115,14 +157,25 @@ def output_function(model, task: str, target_class: int = 1) -> Callable[[np.nda
 
 
 def choose_explainer(model, n_features: int, requested: str = "auto") -> str:
-    """Resolve the 'auto' explainer choice for a fitted model."""
+    """Resolve the 'auto' explainer choice for a fitted model.
+
+    Estimators listed in TREE_TYPES are explained with TreeSHAP, except a
+    GradientBoostingClassifier with more than two classes, which shap supports
+    only for binary problems and which therefore takes the model agnostic
+    branch. Linear models use the linear explainer. Every other model is
+    explained exactly up to 10 features and by permutation sampling above.
+    """
     if requested != "auto":
         return requested
-    name = type(_final_estimator(model)).__name__
-    if name in TREE_TYPES and not isinstance(model, Pipeline):
-        return "tree"
-    if name in LINEAR_TYPES and not isinstance(model, Pipeline):
-        return "linear"
+    est = _final_estimator(model)
+    name = type(est).__name__
+    if not isinstance(model, Pipeline):
+        if name in TREE_TYPES:
+            multiclass_gbc = name == "GradientBoostingClassifier" and len(getattr(est, "classes_", ())) > 2
+            if not multiclass_gbc:
+                return "tree"
+        elif name in LINEAR_TYPES:
+            return "linear"
     if n_features <= 10:
         return "exact"
     return "permutation"
@@ -134,7 +187,7 @@ def shapley_values(
     background: np.ndarray,
     task: str,
     explainer: str = "auto",
-    target_class: int = 1,
+    target_class=1,
     kernel_nsamples: int | str = "auto",
     permutation_max_evals: int | str = "auto",
     seed: int = 0,
@@ -144,8 +197,13 @@ def shapley_values(
     Returns the matrix of Shapley values with shape (n_explain, n_features) and
     the expected value of the explained output over the background sample. All
     estimators use the interventional (marginal) expectation with respect to
-    the background sample so that the efficiency property holds with respect to
-    the mean background output.
+    the whole background sample, which is handed to shap as an explicit masker
+    so that no subsampling takes place, and the efficiency property holds with
+    respect to the mean background output. The kernel estimator runs without
+    the l1 feature preselection of shap, so that it targets the full Shapley
+    vector, and it is seeded from ``seed`` through the global numpy state,
+    which is restored afterwards, because shap's KernelExplainer draws its
+    coalitions from that state.
     """
     import shap
 
@@ -158,17 +216,23 @@ def shapley_values(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         if method == "tree":
-            kwargs = {"data": background, "feature_perturbation": "interventional"}
+            masker = shap.maskers.Independent(background, max_samples=background.shape[0])
+            kwargs = {"data": masker, "feature_perturbation": "interventional"}
             if task == "classification":
                 kwargs["model_output"] = "probability"
             expl = shap.TreeExplainer(model, **kwargs)
             values = np.asarray(expl.shap_values(X_explain, check_additivity=False))
             expected = np.asarray(expl.expected_value, dtype=float).ravel()
-            if values.ndim == 3:
-                classes = list(getattr(model, "classes_", [0, 1]))
-                col = classes.index(target_class) if target_class in classes else min(target_class, values.shape[-1] - 1)
-                values = values[:, :, col]
-                expected = expected[col : col + 1]
+            if task == "classification":
+                classes = list(getattr(_final_estimator(model), "classes_", [0, 1]))
+                col = _class_column(classes, target_class)
+                if values.ndim == 3:
+                    values = values[:, :, col]
+                    expected = expected[col : col + 1]
+                elif len(classes) == 2 and col == 0:
+                    # binary gradient boosting: shap returns the probability of classes_[1]
+                    values = -values
+                    expected = 1.0 - expected
             return values, float(expected[-1])
         if method == "linear":
             expl = shap.LinearExplainer(model, background)
@@ -176,7 +240,12 @@ def shapley_values(
             return values, float(np.ravel(expl.expected_value)[-1])
         if method == "kernel":
             expl = shap.KernelExplainer(g, background)
-            values = np.asarray(expl.shap_values(X_explain, nsamples=kernel_nsamples, silent=True))
+            state = np.random.get_state()
+            np.random.seed(int(seed) % (2**32))
+            try:
+                values = np.asarray(expl.shap_values(X_explain, nsamples=kernel_nsamples, l1_reg=0, silent=True))
+            finally:
+                np.random.set_state(state)
             return values, float(np.ravel(expl.expected_value)[-1])
         if method == "exact":
             masker = shap.maskers.Independent(background, max_samples=background.shape[0])
@@ -212,6 +281,10 @@ class AttributionResult:
         identity (original data).
     seeds : ndarray of shape (B, M)
         Integer seeds used for every pool member, for logging.
+    classes : ndarray or None
+        Sorted class labels of a classification target; None for regression.
+    explained_class : label or None
+        Class whose probability the pool explains; None for regression.
     """
 
     values: np.ndarray
@@ -221,6 +294,8 @@ class AttributionResult:
     model_class_names: list[str]
     resample_indices: list[np.ndarray] = field(default_factory=list)
     seeds: np.ndarray | None = None
+    classes: np.ndarray | None = None
+    explained_class: int | str | None = None
 
     @property
     def n_resamples(self) -> int:
@@ -255,6 +330,8 @@ class AttributionResult:
             model_class_names=[self.model_class_names[m] for m in m_idx],
             resample_indices=[self.resample_indices[b] for b in b_idx] if self.resample_indices else [],
             seeds=None if self.seeds is None else self.seeds[b_idx][:, m_idx],
+            classes=self.classes,
+            explained_class=self.explained_class,
         )
 
 
@@ -311,11 +388,30 @@ class AttributionEngine:
         whole resample.
     explainer : {'auto', 'tree', 'linear', 'kernel', 'exact', 'permutation'}
     task : {'auto', 'regression', 'classification'}
-    target_class : int
-        Class whose probability is explained for classifiers.
+        'auto' takes the task from the reference model class when model
+        classes are given (a classifier gives classification) and otherwise
+        from the target: binary and multiclass targets in the sense of
+        sklearn.utils.multiclass.type_of_target are classified and
+        continuous targets are regressed, so an integer valued regression
+        target needs an explicit task. An explicit task that contradicts the
+        estimator type raises a ValueError.
+    target_class : int or label
+        Class whose probability is explained for classifiers, given either as
+        one of the class labels or as an index into the sorted classes
+        (``classes_``). Classification targets are encoded to 0, ..., C - 1
+        before fitting, so the default 1 is the second class in sorted order,
+        that is the positive class of a 0/1 coding.
     n_jobs : int
         Parallel workers over (resample, model class) pairs.
     random_state : int or None
+
+    Attributes
+    ----------
+    task_ : str
+    classes_ : ndarray
+        Sorted class labels; set for classification only.
+    target_class_ : int or None
+        Index into ``classes_`` of the explained class; None for regression.
     """
 
     def __init__(
@@ -325,7 +421,7 @@ class AttributionEngine:
         background_size: int | None = 100,
         explainer: str = "auto",
         task: str = "auto",
-        target_class: int = 1,
+        target_class=1,
         kernel_nsamples: int | str = "auto",
         permutation_max_evals: int | str = "auto",
         n_jobs: int = 1,
@@ -346,13 +442,22 @@ class AttributionEngine:
 
     # ------------------------------------------------------------------
     def _resolve_task(self, y) -> str:
+        est_task = None
+        if self.model_classes is not None:
+            first = next(iter(self.model_classes), None)
+            if first is not None:
+                est_task = _estimator_task(first[1] if isinstance(first, tuple) else first)
         if self.task != "auto":
+            if est_task is not None and est_task != self.task:
+                kind = "classifier" if est_task == "classification" else "regressor"
+                raise ValueError(f"task='{self.task}' contradicts the reference model class, which is a {kind}.")
             return self.task
+        if est_task is not None:
+            return est_task
         y = np.asarray(y)
         if y.dtype.kind in "OUSb":
             return "classification"
-        uniq = np.unique(y)
-        if uniq.size <= 2 and np.all(np.isin(uniq, [0, 1])):
+        if type_of_target(y) in ("binary", "multiclass"):
             return "classification"
         return "regression"
 
@@ -368,13 +473,21 @@ class AttributionEngine:
         return out
 
     def fit(self, X, y):
-        """Fit the pool of models: every model class on every resample."""
+        """Fit the pool of models: every model class on every resample.
+
+        Classification targets are encoded to the integer codes of their
+        sorted labels, stored in ``classes_``, and the explained class is
+        resolved once into ``target_class_``.
+        """
         X = np.asarray(X, dtype=float)
         y = np.asarray(y)
         self.task_ = self._resolve_task(y)
-        if self.task_ == "classification" and y.dtype.kind in "OUS":
-            classes, y = np.unique(y, return_inverse=True)
-            self.classes_ = classes
+        if self.task_ == "classification":
+            self.classes_, y = np.unique(y, return_inverse=True)
+            y = np.asarray(y).ravel()
+            self.target_class_ = _class_column(self.classes_, self.target_class)
+        else:
+            self.target_class_ = None
         self.model_classes_ = self._resolve_model_classes(self.task_)
         B, M = int(self.n_resamples), len(self.model_classes_)
         if B < 1 or M < 1:
@@ -414,7 +527,7 @@ class AttributionEngine:
                 self.task_,
                 self.explainer,
                 self.background_size,
-                self.target_class,
+                self.target_class_,
                 self.kernel_nsamples,
                 self.permutation_max_evals,
                 int(self.seeds_[b, m]) + 1,
@@ -429,6 +542,7 @@ class AttributionEngine:
             values[b, m] = v
             expected[b, m] = e
             outputs[b, m] = o
+        classification = self.task_ == "classification"
         return AttributionResult(
             values=values,
             expected=expected,
@@ -437,6 +551,8 @@ class AttributionEngine:
             model_class_names=[name for name, _ in self.model_classes_],
             resample_indices=self.resample_indices_,
             seeds=self.seeds_,
+            classes=self.classes_ if classification else None,
+            explained_class=self.classes_[self.target_class_].item() if classification else None,
         )
 
     def fit_explain(self, X, y, X_explain) -> AttributionResult:

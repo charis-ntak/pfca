@@ -11,6 +11,7 @@ ranking are implemented here.
 
 from __future__ import annotations
 
+import numbers
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -77,11 +78,21 @@ class TrapezoidalFuzzyNumber:
         return (self.a + alpha * (self.b - self.a), self.d - alpha * (self.d - self.c))
 
     def centroid(self) -> float:
+        """Centroid of the trapezoid, always inside the support [a, d].
+
+        The closed form is evaluated after translating the trapezoid to its
+        left endpoint a, which avoids the catastrophic cancellation of the
+        raw formula when the four parameters are nearly equal but far from
+        zero, as happens when pool members coincide up to floating point
+        noise. A degenerate (crisp) number returns its single value.
+        """
         a, b, c, d = self.parameters
-        den = 3.0 * (d + c - a - b)
-        if abs(den) < 1e-15:
-            return 0.5 * (a + d)
-        return (d**2 + c**2 + c * d - a**2 - b**2 - a * b) / den
+        b, c, d = b - a, c - a, d - a
+        den = 3.0 * (d + c - b)
+        if den <= 0.0:
+            return a + 0.5 * d
+        cen = a + (d * d + c * c + c * d - b * b) / den
+        return float(min(max(cen, self.a), self.d))
 
     def width(self) -> float:
         return self.d - self.a
@@ -175,13 +186,21 @@ def alpha_cut_array(Q: np.ndarray, alpha: float) -> tuple[np.ndarray, np.ndarray
 
 
 def centroid_array(Q: np.ndarray) -> np.ndarray:
-    """Centroid of every trapezoid stored as a five quantile vector."""
-    a, b, c, d = Q[..., 0], Q[..., 1], Q[..., 3], Q[..., 4]
-    den = 3.0 * (d + c - a - b)
-    num = d**2 + c**2 + c * d - a**2 - b**2 - a * b
+    """Centroid of every trapezoid stored as a five quantile vector.
+
+    The same translated closed form as ``TrapezoidalFuzzyNumber.centroid`` is
+    used, so that every value lies inside the support of its trapezoid even
+    when the quantiles coincide up to floating point noise.
+    """
+    Q = np.asarray(Q, dtype=float)
+    a = Q[..., 0]
+    b, c, d = Q[..., 1] - a, Q[..., 3] - a, Q[..., 4] - a
+    den = 3.0 * (d + c - b)
+    degenerate = den <= 0.0
+    num = d * d + c * c + c * d - b * b
     with np.errstate(invalid="ignore", divide="ignore"):
-        cen = np.where(np.abs(den) < 1e-15, 0.5 * (a + d), num / np.where(np.abs(den) < 1e-15, 1.0, den))
-    return cen
+        cen = a + np.where(degenerate, 0.5 * d, num / np.where(degenerate, 1.0, den))
+    return np.minimum(np.maximum(cen, Q[..., 0]), Q[..., 4])
 
 
 def sign_confidence(samples: np.ndarray, axis: int = 0) -> np.ndarray:
@@ -368,6 +387,25 @@ class LinguisticLabelSet:
     def names(self) -> list[str]:
         return [n for n, _ in self.labels]
 
+    @staticmethod
+    def _core_center(A: TrapezoidalFuzzyNumber) -> float:
+        """Representative point of a label: the midpoint of its core, or the finite core end of a shoulder."""
+        b, c = A.core
+        b_open = (not np.isfinite(b)) or b <= -BIG
+        c_open = (not np.isfinite(c)) or c >= BIG
+        if b_open and c_open:
+            return 0.0
+        if b_open:
+            return float(c)
+        if c_open:
+            return float(b)
+        return 0.5 * (float(b) + float(c))
+
+    @property
+    def centers(self) -> np.ndarray:
+        """Representative point of every label on the standardized axis, used to break ties between labels."""
+        return np.array([self._core_center(A) for _, A in self.labels], dtype=float)
+
     def profile(self, F: TrapezoidalFuzzyNumber, scale: float = 1.0) -> dict[str, float]:
         """Equation 3 evaluated for every label on the standardized axis."""
         Fs = F.scaled(scale) if scale != 1.0 else F
@@ -381,9 +419,44 @@ class LinguisticLabelSet:
         return out
 
     def best_label(self, F: TrapezoidalFuzzyNumber, scale: float = 1.0) -> tuple[str, float]:
+        """Label with the largest compatibility (Equation 3) and its degree.
+
+        Equation 3 is a possibilistic measure, so every label whose core meets
+        the core of F has compatibility one and a wide attribution ties for
+        two or more labels. Ties are broken by the distance between the
+        centroid of the scaled attribution and the representative point of
+        the label (``centers``); a remaining tie goes to the first label in
+        order.
+        """
         prof = self.profile(F, scale)
-        name = max(prof, key=prof.get)
+        best = max(prof.values())
+        cands = [n for n, v in prof.items() if v >= best - 1e-12]
+        if len(cands) > 1:
+            cen = (F.scaled(scale) if scale != 1.0 else F).centroid()
+            centers = dict(zip(self.names, self.centers))
+            name = min(cands, key=lambda n: abs(centers[n] - cen))
+        else:
+            name = cands[0]
         return name, prof[name]
+
+    def best_label_array(self, Q: np.ndarray, scale: float = 1.0, profile: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """Index and degree of the best label for every quantile vector in Q (..., 5).
+
+        The tie breaking rule of ``best_label`` is applied to the whole array.
+        ``profile`` may pass the output of ``profile_array`` for the same Q
+        and scale so that the compatibilities are not recomputed. Returns two
+        arrays of shape Q.shape[:-1].
+        """
+        Q = np.asarray(Q, dtype=float)
+        prof = self.profile_array(Q, scale) if profile is None else np.asarray(profile, dtype=float)
+        if prof.shape != (*Q.shape[:-1], len(self.labels)):
+            raise ValueError("profile must have shape Q.shape[:-1] + (n_labels,).")
+        best = prof.max(axis=-1, keepdims=True)
+        tied = prof >= best - 1e-12
+        dist = np.abs(centroid_array(Q / float(scale))[..., None] - self.centers)
+        idx = np.argmin(np.where(tied, dist, np.inf), axis=-1)
+        deg = np.take_along_axis(prof, idx[..., None], axis=-1)[..., 0]
+        return idx, deg
 
     def profile_array(self, Q: np.ndarray, scale: float = 1.0) -> np.ndarray:
         """Compatibility of every quantile vector in Q (..., 5) with every label: shape (..., n_labels)."""
@@ -397,15 +470,16 @@ class LinguisticLabelSet:
         return out.reshape(*Q.shape[:-1], len(self.labels))
 
 
-def standardization_scale(concept_values: np.ndarray, method: str = "mean_abs", reference_output: np.ndarray | None = None) -> float:
+def standardization_scale(concept_values: np.ndarray, method: str | float = "mean_abs", reference_output: np.ndarray | None = None) -> float:
     """Scale that maps attributions to the standardized axis of the linguistic labels.
 
     'mean_abs' uses the mean absolute concept attribution of the reference
     pool member across instances and concepts (one unit is a typical
     contribution). 'output_sd' uses the standard deviation of the reference
-    model output. A positive float is used as given.
+    model output. A positive number is used as given; Python and numpy real
+    scalars (for example float32 or int64) are accepted, booleans are not.
     """
-    if isinstance(method, (int, float)) and not isinstance(method, bool):
+    if isinstance(method, numbers.Real) and not isinstance(method, (bool, np.bool_)):
         if method <= 0:
             raise ValueError("A numeric scale must be positive.")
         return float(method)

@@ -15,6 +15,7 @@ pfca:
   n_concepts_grid: [2, 3, 4]
   fuzzifier_grid: [2.0]
   alpha_grid: [0.0, 0.5, 1.0]
+  partition_source: data   # the true blocks are never a candidate of the data driven variants in Phase A
   solver: grid
   knee_method: utopia
   fuzzy_shape: trapezoidal
@@ -22,5 +23,6 @@ pfca:
 perturbation_instances: 5
 n_perturbations: 1
 imputation: conditional
-grouped_background: 30
+grouped_background: null
+trace_memory: false
 n_jobs: 2

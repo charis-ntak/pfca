@@ -1,6 +1,7 @@
 """Statistical analysis (Section 7.4): paired tests across datasets, Friedman and
 Nemenyi procedures, effect sizes with confidence intervals, linear mixed models
-for Phase A and ordinal or binomial mixed models for Phase D (statsmodels)."""
+for Phase A and, for Phase D, ordinal regression with a covariance clustered by
+expert and binomial mixed models (statsmodels)."""
 
 from __future__ import annotations
 
@@ -54,7 +55,7 @@ def paired_effect_sizes(a: np.ndarray, b: np.ndarray, n_boot: int = 2000, random
     }
 
 
-def wilcoxon_holm(table: pd.DataFrame, reference: str, alternative: str = "two-sided") -> pd.DataFrame:
+def wilcoxon_holm(table: pd.DataFrame, reference: str, alternative: str = "two-sided", random_state: int | None = 0) -> pd.DataFrame:
     """Wilcoxon signed rank tests of every method against a reference across datasets, Holm corrected.
 
     ``table`` has one row per dataset (or replication) and one column per
@@ -72,7 +73,7 @@ def wilcoxon_holm(table: pd.DataFrame, reference: str, alternative: str = "two-s
         else:
             res = stats.wilcoxon(a, b, alternative=alternative, zero_method="wilcox")
             stat, p = float(res.statistic), float(res.pvalue)
-        es = paired_effect_sizes(a, b)
+        es = paired_effect_sizes(a, b, random_state=random_state)
         rows.append({"method": m, "reference": reference, "n": int(a.size), "statistic": stat, "p_value": p, **{k: v for k, v in es.items()}})
     df = pd.DataFrame(rows)
     if len(df):
@@ -120,16 +121,31 @@ def mixed_model(df: pd.DataFrame, response: str, fixed: list[str], group: str, r
     return model.fit(reml=reml)
 
 
-def ordinal_model(df: pd.DataFrame, response: str, predictors: list[str]):
-    """Ordinal (proportional odds) regression for Likert ratings (statsmodels OrderedModel)."""
+def ordinal_model(df: pd.DataFrame, response: str, predictors: list[str], group: str | None = None, group_effects: bool = False):
+    """Ordinal (proportional odds) regression for Likert ratings (statsmodels OrderedModel).
+
+    Phase D is a within subject design, so the ratings of one expert are not
+    independent. When ``group`` names the expert identifier the covariance of
+    the estimates is clustered by expert (``cov_type='cluster'``), which
+    corrects the standard errors and p values of the format contrasts for the
+    repeated ratings; with ``group_effects`` the expert also enters as a fixed
+    effect through dummy variables. statsmodels has no cumulative link mixed
+    model, so a random intercept per expert is not fitted; this is the stated
+    departure from the ordinal mixed model of Section 7.4 of the guide.
+    """
     try:
         from statsmodels.miscmodels.ordinal_model import OrderedModel
     except ImportError as exc:
         raise ImportError("statsmodels is required; install with 'pip install statsmodels'.") from exc
     X = pd.get_dummies(df[predictors], drop_first=True).astype(float)
+    if group is not None and group_effects:
+        X = pd.concat([X, pd.get_dummies(df[group].astype(str), prefix=group, drop_first=True).astype(float)], axis=1)
     y = pd.Categorical(df[response], ordered=True)
     model = OrderedModel(y, X, distr="logit")
-    return model.fit(method="bfgs", disp=False)
+    if group is None:
+        return model.fit(method="bfgs", disp=False)
+    codes = pd.factorize(df[group])[0]
+    return model.fit(method="bfgs", disp=False, cov_type="cluster", cov_kwds={"groups": codes})
 
 
 def binomial_mixed_model(df: pd.DataFrame, response: str, fixed: list[str], group: str):

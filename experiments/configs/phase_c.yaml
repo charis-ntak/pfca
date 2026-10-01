@@ -14,12 +14,13 @@ pfca:
   n_concepts_grid: [2, 3, 4, 5, 6, 8]
   fuzzifier_grid: [1.5, 2.0, 2.5]
   alpha_grid: [0.0, 0.25, 0.5, 0.75, 1.0]
+  partition_source: both   # the a priori subscales are domain knowledge and enter as a candidate partition (Section 3.2)
   solver: grid
   knee_method: utopia
 perturbation_instances: 20
 n_perturbations: 3
 imputation: conditional
-grouped_background: 50
+grouped_background: null
 example_instances: [0, 1, 2]
 seed: 0          # base seed; repetition r uses seed + r for the pool, the tuning and the background samples
 split_seed: 0    # seed of the repeated 60/20/20 splits

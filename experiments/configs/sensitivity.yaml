@@ -34,7 +34,7 @@ defaults:
   knee_method: utopia
 nsga_pop_size: 40
 nsga_generations: 30
-include_apriori: true           # the true block partition enters as a candidate, as for pfca in Phase A
+include_apriori: false  # the true blocks of a simulation are not domain knowledge (Section 3.2)           # the true block partition enters as a candidate, as for pfca in Phase A
 pfca:
   n_concepts_grid: [2, 3, 4, 5, 6, 8]
   fuzzifier_grid: [1.5, 2.0, 2.5]

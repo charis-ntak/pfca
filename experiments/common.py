@@ -130,6 +130,13 @@ class PerInstanceWriter:
     def __init__(self, path: str | Path):
         self.path = Path(path)
 
+    def append_from_rows(self, rows: list[dict], key_columns: list[str]) -> None:
+        """Pop the ``per_instance`` table of every metric row and store it with the row's keys."""
+        for r in rows:
+            table = r.pop("per_instance", None)
+            if isinstance(table, pd.DataFrame) and all(c in r for c in key_columns) and "method" in r:
+                self.append({c: r[c] for c in key_columns}, str(r["method"]), table)
+
     def append(self, key: dict, method: str, table: pd.DataFrame | None) -> None:
         if table is None or len(table) == 0:
             return

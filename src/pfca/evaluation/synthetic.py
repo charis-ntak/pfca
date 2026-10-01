@@ -187,16 +187,22 @@ def make_synthetic(
     Parameters
     ----------
     family : {'additive', 'interaction', 'redundancy'}
-    n_samples, n_features, rho : design factors of Phase A
+    n_samples, n_features, rho : design factors of Phase A; rho must lie in [0, 1], the range
+        in which the generating equations and the posterior formulas are valid
     n_factors : number of latent factors; default round(sqrt(n_features)) with a minimum of two
     nonlinear : use a mix of link functions (otherwise all linear)
+    coefficients, links : one entry per factor when given, every link being a key of LINKS
     signal_to_noise : ratio of the variance of the signal to the noise variance
     n_duplicates : redundancy family, number of appended duplicate features (default n_factors)
     duplicate_noise : standard deviation of the perturbation of near duplicates (exact copies use 0)
     duplicates : explicit list of (source feature, position, noise sd) used when resampling
+
+    A value outside these ranges raises ValueError.
     """
     if family not in ("additive", "interaction", "redundancy"):
         raise ValueError("family must be 'additive', 'interaction' or 'redundancy'")
+    if not 0.0 <= float(rho) <= 1.0:
+        raise ValueError("rho must lie in [0, 1]")
     rng = make_rng(random_state)
     F = int(n_factors) if n_factors is not None else max(2, int(round(np.sqrt(n_features))))
     F = min(F, n_features)
@@ -205,6 +211,8 @@ def make_synthetic(
         coefficients = np.linspace(2.0, 0.5, F)
         coefficients = coefficients * rng.choice([-1.0, 1.0], size=F)
     coefficients = np.asarray(coefficients, dtype=float)
+    if coefficients.shape != (F,):
+        raise ValueError(f"coefficients must have one entry per factor, expected {F} and got {coefficients.size}")
     if links is None:
         if nonlinear:
             cycle = ["linear", "sin", "tanh", "square", "cubic"]
@@ -212,6 +220,11 @@ def make_synthetic(
         else:
             links = ["linear"] * F
     links = list(links)
+    if len(links) != F:
+        raise ValueError(f"links must have one entry per factor, expected {F} and got {len(links)}")
+    unknown = [name for name in links if name not in LINKS]
+    if unknown:
+        raise ValueError(f"unknown link function {unknown}; the available links are {sorted(LINKS)}")
     if interaction is None:
         interaction = 1.5 if family == "interaction" else 0.0
     Z = rng.normal(size=(n_samples, F))

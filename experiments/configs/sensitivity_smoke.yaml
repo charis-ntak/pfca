@@ -27,7 +27,7 @@ defaults:                 # B falls back to the largest listed value and M to al
   knee_method: utopia
 nsga_pop_size: 8
 nsga_generations: 3
-include_apriori: true
+include_apriori: false  # the true blocks of a simulation are not domain knowledge (Section 3.2)
 pfca:
   n_concepts_grid: [2, 3, 4]
   fuzzifier_grid: [2.0]

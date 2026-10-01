@@ -43,7 +43,8 @@ def grouped_shapley(
     sample with the features of the groups in S set to the explained instance
     (interventional expectation). With at most ``max_exact_groups`` groups all
     coalitions are enumerated; otherwise Shapley values are estimated by
-    permutation sampling with antithetic permutations.
+    permutation sampling with antithetic permutations, ``n_permutations``
+    being rounded up to at least one antithetic pair.
 
     Returns an array of shape (n_explain, n_groups) and the expected value.
     """
@@ -100,10 +101,11 @@ def grouped_shapley(
                 out[i, k] = phi
     else:
         rng = make_rng(random_state)
+        n_pairs = max(1, int(n_permutations) // 2)
         for i in range(n):
             x = X_explain[i]
             acc = np.zeros(K)
-            for _ in range(n_permutations // 2):
+            for _ in range(n_pairs):
                 perm = rng.permutation(K)
                 for order in (perm, perm[::-1]):
                     S_mask = np.zeros(K, dtype=bool)
@@ -113,7 +115,7 @@ def grouped_shapley(
                         cur = coalition_value(x, S_mask)
                         acc[k] += cur - prev
                         prev = cur
-            out[i] = acc / (2 * (n_permutations // 2))
+            out[i] = acc / (2 * n_pairs)
     return out, expected
 
 
@@ -128,13 +130,24 @@ def bootstrapped_shap(
     percentiles: tuple[float, float] = (5.0, 95.0),
     n_jobs: int = 1,
     random_state: int | None = 0,
+    task: str = "auto",
+    target_class=1,
 ) -> dict:
-    """Feature level SHAP with bootstrap percentile intervals (single model class)."""
+    """Feature level SHAP with bootstrap percentile intervals (single model class).
+
+    ``task`` and ``target_class`` are passed to :class:`pfca.AttributionEngine`.
+    As for :func:`feature_shap`, the task should be given explicitly for
+    classifiers, so that the probability of ``target_class`` is explained
+    rather than the class label; an explicit task that contradicts the
+    estimator type raises a ValueError.
+    """
     engine = AttributionEngine(
         model_classes=[("model", model)],
         n_resamples=n_resamples,
         background_size=background_size,
         explainer=explainer,
+        task=task,
+        target_class=target_class,
         n_jobs=n_jobs,
         random_state=random_state,
     )

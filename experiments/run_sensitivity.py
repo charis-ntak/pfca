@@ -420,13 +420,13 @@ class CellRun:
         self.class_names = [name for name, _ in classes]
         self.B_max = max(int(b) for b in cfg["resamples"])
         self.engine = AttributionEngine(model_classes=classes, n_resamples=self.B_max, background_size=cfg["background_size"], explainer=cfg.get("explainer", "auto"), n_jobs=cfg.get("n_jobs", 1), random_state=self.seed)
-        with measure() as b_pool:
+        with measure(trace_memory=bool(self.cfg.get("trace_memory", False))) as b_pool:
             self.engine.fit(self.problem.X, self.problem.y)
             self.attr: AttributionResult = self.engine.explain(self.X_explain)
         self.pool_budget = b_pool
         rep_model = ref.__class__(**ref.get_params()).fit(X_rep, y_rep)
         rep_attr, _ = shapley_values(rep_model, self.X_explain, X_rep[: cfg["background_size"]], TASK, explainer="tree")
-        self.groups = [list(map(int, b)) for b in self.problem.blocks] if cfg.get("include_apriori", True) else None
+        self.groups = [list(map(int, b)) for b in self.problem.blocks] if cfg.get("include_apriori", False) else None
         self.ctx = protocol.EvaluationContext(
             model_fn=output_function(self.engine.reference_model_, TASK),
             X_explain=self.X_explain,
@@ -466,7 +466,7 @@ class CellRun:
         if setting.knee_method in ALTERNATIVE_SELECTIONS:
             result = self._run_alternative(setting)
         else:
-            out = protocol.pfca_output("pfca", self.engine, self.subset(setting), self.problem.feature_names, self.pfca_kwargs(setting), self.groups)
+            out = protocol.pfca_output("pfca", self.engine, self.subset(setting), self.problem.feature_names, self.pfca_kwargs(setting), self.groups, trace_memory=bool(self.cfg.get("trace_memory", False)))
             result = (out, protocol.evaluate(out, self.ctx))
         self._cache[setting] = result
         return result
@@ -478,7 +478,7 @@ class CellRun:
         if self.groups is not None:
             kw["apriori_groups"] = self.groups
             kw.setdefault("partition_source", "both")
-        with measure() as b:
+        with measure(trace_memory=bool(self.cfg.get("trace_memory", False))) as b:
             index = alternative_index(base_expl.selection, setting.knee_method)
             expl = PFCAExplainer(**kw).explanation_at(base_expl, index)
         out = output_from_explanation("pfca", expl, self.engine, base_out.wall_seconds + b.wall_seconds, max(base_out.peak_mb, b.peak_python_mb))

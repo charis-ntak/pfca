@@ -135,7 +135,7 @@ def plot_pareto_front(table, ax=None, highlight_knee: bool = True):
     dom = table[~table["pareto"]]
     front = table[table["pareto"]].sort_values("complexity")
     ax.scatter(dom["complexity"], dom["fidelity_loss"], s=14, color=GRID, edgecolor=MUTED, linewidth=0.4, label="dominated")
-    sc = ax.scatter(front["complexity"], front["fidelity_loss"], s=36, c=front["instability"], cmap="Blues", vmin=0, vmax=max(1e-9, float(front["instability"].max())), edgecolor=TEXT, linewidth=0.5, label="Pareto front")
+    sc = ax.scatter(front["complexity"], front["fidelity_loss"], s=36, c=front["instability"], cmap="Blues", vmin=0, vmax=max(0.05, float(front["instability"].max())), edgecolor=TEXT, linewidth=0.5, label="Pareto front")
     ax.plot(front["complexity"], front["fidelity_loss"], color=PALETTE[0], linewidth=1, alpha=0.6)
     if highlight_knee and table["knee"].any():
         k = table[table["knee"]].iloc[0]

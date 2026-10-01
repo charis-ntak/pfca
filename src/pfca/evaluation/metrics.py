@@ -94,13 +94,32 @@ def concept_recovery(U_est: np.ndarray, U_true: np.ndarray) -> dict[str, float]:
 def rank_recovery(est_importance: np.ndarray, true_importance: np.ndarray, U_est: np.ndarray | None = None, U_true: np.ndarray | None = None) -> float:
     """Spearman correlation between estimated and true importance rankings.
 
-    When membership matrices are given the estimated importances are first
-    mapped to the true factors by maximum overlap.
+    ``est_importance`` is either the estimated attribution matrix of shape
+    (n, K), whose global importance is the mean absolute attribution of every
+    concept as in ``SyntheticProblem.true_global_importance``, or a vector of
+    K importances. When membership matrices are given the estimated concepts
+    are first mapped to the true factors by maximum overlap. With the
+    attribution matrix the attributions of the concepts mapped to the same
+    factor are summed per instance before the absolute value is taken, which
+    is the quantity the true importance is defined on and the one used by
+    ``attribution_recovery_error``. With importances alone the importances are
+    summed per factor instead, which is an approximation: because
+    mean |a| + mean |b| >= mean |a + b|, a factor covered by several concepts
+    is inflated whenever their attributions have opposite signs for some
+    instances, so the attribution matrix should be passed when available.
     """
     est = np.asarray(est_importance, dtype=float)
+    if est.ndim not in (1, 2):
+        raise ValueError("est_importance must be a vector of importances or an (n, K) attribution matrix")
     if U_est is not None and U_true is not None:
         assignment = match_concepts_to_factors(U_est, U_true)
-        est = aggregate_by_assignment(est[None, :], assignment, np.asarray(U_true).shape[1])[0]
+        F = np.asarray(U_true).shape[1]
+        if est.ndim == 2:
+            est = np.abs(aggregate_by_assignment(est, assignment, F)).mean(axis=0)
+        else:
+            est = aggregate_by_assignment(est[None, :], assignment, F)[0]
+    elif est.ndim == 2:
+        est = np.abs(est).mean(axis=0)
     if est.size < 2:
         return float("nan")
     r = spearmanr(est, true_importance).correlation
@@ -112,25 +131,46 @@ def rank_recovery(est_importance: np.ndarray, true_importance: np.ndarray, U_est
 # ----------------------------------------------------------------------
 
 
-def _impute(X_query: np.ndarray, weights: np.ndarray, background: np.ndarray, mode: str, rng: np.random.Generator, k_neighbors: int = 10) -> np.ndarray:
+def _impute(
+    X_query: np.ndarray,
+    weights: np.ndarray,
+    background: np.ndarray,
+    mode: str,
+    rng: np.random.Generator | None = None,
+    k_neighbors: int = 10,
+    replacement: np.ndarray | None = None,
+) -> np.ndarray:
     """Replace features according to removal weights in [0, 1].
 
     ``weights`` has shape (n, d): the degree to which every feature of every
     row is removed. With 'conditional' imputation the replacement values are
-    the mean of the k nearest background rows measured on the kept features
-    (weighted by 1 - w). With 'marginal' imputation a random background row is
-    used.
+    the mean of the ``k_neighbors`` nearest background rows, measured on the
+    kept features (weighted by 1 - w) after division by the standard deviation
+    of every background column. Columns that are constant in the background
+    carry no information about the neighbors and are left out of the
+    distance, so that a query value differing from the constant cannot swamp
+    the kept features; when no kept feature is informative the background
+    mean is used. With 'marginal' imputation the replacement rows are
+    ``replacement`` (shape (n, d)) when given, so that a caller can reuse the
+    same rows across calls, and otherwise one background row drawn at random
+    with ``rng`` for every query row.
     """
     n, d = X_query.shape
     if mode == "marginal":
-        rep = background[rng.integers(0, background.shape[0], size=n)]
+        if replacement is None:
+            if rng is None:
+                raise ValueError("marginal imputation requires rng or replacement rows")
+            replacement = background[rng.integers(0, background.shape[0], size=n)]
+        rep = np.asarray(replacement, dtype=float)
     elif mode == "conditional":
         rep = np.empty_like(X_query)
-        sd = background.std(axis=0) + 1e-12
+        sd = background.std(axis=0)
+        informative = sd > 1e-12
+        sd = np.where(informative, sd, 1.0)
         Bz = background / sd
         k = min(k_neighbors, background.shape[0])
         for i in range(n):
-            keep_w = 1.0 - weights[i]
+            keep_w = (1.0 - weights[i]) * informative
             if keep_w.sum() <= 1e-9:
                 rep[i] = background.mean(axis=0)
                 continue
@@ -151,56 +191,90 @@ def deletion_insertion_curves(
     order: np.ndarray,
     mode: str = "conditional",
     random_state: int | None = 0,
+    k_neighbors: int = 10,
+    marginal_draws: int = 10,
 ) -> dict[str, float]:
     """Area under the deletion and insertion curves when concepts are removed or inserted in order.
 
     ``order`` has shape (n, K) (per instance ordering of concepts, most
     important first) or (K,) for a global ordering. Removal of a concept
-    removes its features to the degree of their membership; the removed values
-    are imputed conditionally on the kept features from the background sample
-    or marginally. Curves are normalized so that the fully present instance
-    maps to one and the fully removed instance to zero. Lower deletion area and
-    higher insertion area indicate a more faithful ordering.
+    removes its features to the degree of their membership. The removed values
+    are imputed conditionally on the kept features as the mean of the
+    ``k_neighbors`` nearest background rows, or marginally from
+    ``marginal_draws`` background rows drawn once per instance and reused for
+    the reference value and for every step of both curves, the model output
+    being averaged over the draws, so that both curves are paths between the
+    fully present and the fully removed instance. Every curve is the model
+    output minus the output of the fully removed instance, multiplied by the
+    sign of the total effect of the instance (output of the fully present
+    minus output of the fully removed instance) and divided by the mean
+    absolute total effect over instances. The scale is common to all
+    instances, so that the average deletion curve runs from one to zero and
+    the average insertion curve from zero to one, while an instance whose
+    total effect is close to zero contributes a bounded value instead of
+    dominating the area. Lower deletion area and higher insertion area
+    indicate a more faithful ordering.
     """
+    if mode not in ("conditional", "marginal"):
+        raise ValueError("mode must be 'conditional' or 'marginal'")
     rng = np.random.default_rng(random_state)
     X = np.asarray(X, dtype=float)
+    background = np.asarray(background, dtype=float)
     U = np.asarray(U, dtype=float)
     n, d = X.shape
     K = U.shape[1]
     order = np.asarray(order)
     if order.ndim == 1:
         order = np.tile(order, (n, 1))
-    f_full = model_fn(X)
-    f_none = model_fn(_impute(X, np.ones((n, d)), background, mode, rng))
-    denom = f_full - f_none
-    denom = np.where(np.abs(denom) < 1e-9, np.sign(denom) * 1e-9 + (denom == 0) * 1e-9, denom)
+    if mode == "marginal":
+        R = max(1, int(marginal_draws))
+        replacements = background[rng.integers(0, background.shape[0], size=(R, n))]
+
+    def output(weights: np.ndarray) -> np.ndarray:
+        if mode == "marginal":
+            Xs = np.concatenate([_impute(X, weights, background, mode, replacement=replacements[r]) for r in range(R)], axis=0)
+            return np.asarray(model_fn(Xs), dtype=float).reshape(R, n).mean(axis=0)
+        return np.asarray(model_fn(_impute(X, weights, background, mode, rng, k_neighbors=k_neighbors)), dtype=float)
+
+    f_full = np.asarray(model_fn(X), dtype=float)
+    f_none = output(np.ones((n, d)))
+    total = f_full - f_none
+    scale = float(np.mean(np.abs(total)))
+    scale = scale if scale > 1e-12 else 1.0
+    sign = np.where(total >= 0, 1.0, -1.0)
+
+    def normalize(f: np.ndarray) -> np.ndarray:
+        return (f - f_none) * sign / scale
+
     del_curve = np.zeros((n, K + 1))
     ins_curve = np.zeros((n, K + 1))
-    del_curve[:, 0] = 1.0
+    del_curve[:, 0] = normalize(f_full)
     ins_curve[:, 0] = 0.0
     removed = np.zeros((n, K))
     for t in range(K):
         removed[np.arange(n), order[:, t]] = 1.0
         w_del = np.clip(removed @ U.T, 0.0, 1.0)
         w_ins = 1.0 - w_del
-        f_del = model_fn(_impute(X, w_del, background, mode, rng))
-        f_ins = model_fn(_impute(X, w_ins, background, mode, rng))
-        del_curve[:, t + 1] = (f_del - f_none) / denom
-        ins_curve[:, t + 1] = (f_ins - f_none) / denom
-    del_curve = np.clip(del_curve, -1.0, 2.0)
-    ins_curve = np.clip(ins_curve, -1.0, 2.0)
+        del_curve[:, t + 1] = normalize(output(w_del))
+        ins_curve[:, t + 1] = normalize(output(w_ins))
     auc_del = np.trapezoid(del_curve, dx=1.0 / K, axis=1) if hasattr(np, "trapezoid") else np.trapz(del_curve, dx=1.0 / K, axis=1)
     auc_ins = np.trapezoid(ins_curve, dx=1.0 / K, axis=1) if hasattr(np, "trapezoid") else np.trapz(ins_curve, dx=1.0 / K, axis=1)
-    return {"deletion_auc": float(np.mean(auc_del)), "insertion_auc": float(np.mean(auc_ins)), "deletion_curve": del_curve.mean(axis=0), "insertion_curve": ins_curve.mean(axis=0)}
+    return {"deletion_auc": float(np.mean(auc_del)), "insertion_auc": float(np.mean(auc_ins)), "deletion_curve": del_curve.mean(axis=0), "insertion_curve": ins_curve.mean(axis=0), "deletion_auc_per_instance": np.asarray(auc_del, dtype=float), "insertion_auc_per_instance": np.asarray(auc_ins, dtype=float)}
 
 
 def surrogate_fidelity(concept_attr: np.ndarray, output: np.ndarray, cv: int = 5, metric: str = "r2", random_state: int | None = 0) -> float:
-    """Cross validated R squared (or log loss for probabilities) of a linear surrogate."""
+    """Cross validated R squared (or log loss for probabilities) of a linear surrogate.
+
+    ``concept_attr`` has shape (n, K) and ``output`` shape (n,), aligned row
+    by row; a different number of rows raises ValueError.
+    """
     Z = np.asarray(concept_attr, dtype=float)
     y = np.asarray(output, dtype=float)
-    n = y.shape[0]
     if Z.ndim == 1:
         Z = Z[:, None]
+    if Z.shape[0] != y.shape[0]:
+        raise ValueError("concept_attr and output must have the same number of rows")
+    n = Z.shape[0]
     if Z.shape[1] == 0 or n < 4:
         return float("nan")
     kf = KFold(n_splits=min(cv, n), shuffle=True, random_state=random_state)

@@ -179,3 +179,131 @@ def test_linguistic_labels_ruspini():
     assert standardization_scale(np.array([[1.0, -3.0]]), "mean_abs") == 2.0
     assert standardization_scale(None, 2.5) == 2.5
     assert standardization_scale(np.zeros((2, 2)), "output_sd", np.array([0.0, 2.0])) == 1.0
+
+
+def exact_centroid(F):
+    """Area weighted centroid of the left triangle, the rectangle and the right triangle."""
+    a, b, c, d = F.parameters
+    parts = [((b - a) / 2.0, a + 2.0 * (b - a) / 3.0), (c - b, (b + c) / 2.0), ((d - c) / 2.0, c + (d - c) / 3.0)]
+    area = sum(w for w, _ in parts)
+    if area == 0:
+        return 0.5 * (a + d)
+    return sum(w * z for w, z in parts) / area
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_centroid_matches_area_decomposition(seed):
+    rng = np.random.default_rng(seed)
+    F = TrapezoidalFuzzyNumber(*np.sort(rng.uniform(-5, 5, 4)))
+    assert F.centroid() == pytest.approx(exact_centroid(F), abs=1e-12)
+    assert F.a <= F.centroid() <= F.d
+    G = F.shifted(1e6)
+    assert G.centroid() == pytest.approx(exact_centroid(F) + 1e6, abs=1e-8)
+    assert G.a <= G.centroid() <= G.d
+
+
+@pytest.mark.parametrize(
+    "offset, width",
+    [(1000.0, 1e-9), (1e4, 1e-9), (1e5, 1e-9), (1e6, 1e-9), (1e6, 1e-6), (50.0, 1e-13), (1000.0, 1e-12), (-1000.0, 1e-9)],
+)
+def test_centroid_nearly_degenerate_stays_in_support(offset, width):
+    """Nearly coincident quantiles must not push the defuzzified value outside [a, d]."""
+    F = TrapezoidalFuzzyNumber(offset, offset, offset, offset + width)
+    cen = F.centroid()
+    assert F.a <= cen <= F.d
+    assert cen == pytest.approx(offset + width / 3.0, abs=width * 1e-6)
+    Q = np.array([offset, offset, offset, offset, offset + width])
+    arr = centroid_array(Q)
+    assert F.a <= arr <= F.d
+    assert arr == pytest.approx(cen, abs=width * 1e-6)
+
+
+@pytest.mark.parametrize("mag, spread", [(50.0, 1e-11), (1000.0, 1e-12), (1e4, 1e-11), (1e6, 1e-9)])
+def test_centroid_of_two_point_pool_is_midpoint(mag, spread):
+    """Pool members that coincide up to floating point noise give a centroid at their midpoint."""
+    x = np.array([mag, mag + spread])
+    F = fuzzify(x)
+    tol = max(spread * 1e-3, 4.0 * np.spacing(mag))  # the spread may span only a few representable values
+    assert F.centroid() == pytest.approx(mag + spread / 2.0, abs=tol)
+    assert F.a <= F.centroid() <= F.d
+    Q = fuzzify_array(x[:, None], axis=0)
+    c = centroid_array(Q)
+    assert c.shape == (1,)
+    assert c[0] == pytest.approx(mag + spread / 2.0, abs=tol)
+    assert Q[0, 0] <= c[0] <= Q[0, 4]
+
+
+def test_centroid_array_inside_support_random():
+    rng = np.random.default_rng(3)
+    S = 1e4 + 1e-9 * rng.normal(size=(40, 6, 5))
+    Q = fuzzify_array(S, axis=0)
+    c = centroid_array(Q)
+    assert np.all(c >= Q[..., 0]) and np.all(c <= Q[..., 4])
+    for i in range(6):
+        for j in range(5):
+            assert c[i, j] == pytest.approx(exact_centroid(tfn_from_quantiles(Q[i, j])), abs=1e-14 * 1e4)
+
+
+def test_best_label_tie_break_by_core_distance():
+    """Labels tied at compatibility one are separated by the distance between centroid and label core."""
+    L = LinguisticLabelSet()
+    symmetric = [
+        TrapezoidalFuzzyNumber(-2, -1, 1, 2),
+        TrapezoidalFuzzyNumber(-1.5, -1, 1, 1.5),
+        TrapezoidalFuzzyNumber(-3, -2.1, 2.1, 3),
+        TrapezoidalFuzzyNumber(-1.5, -1.2, 1.3, 1.6),
+    ]
+    for F in symmetric:
+        prof = L.profile(F)
+        assert prof["weakly negative"] == 1.0 and prof["negligible"] == 1.0 and prof["weakly positive"] == 1.0
+        assert L.best_label(F) == ("negligible", 1.0)
+    assert L.best_label(TrapezoidalFuzzyNumber(0.6, 0.95, 2.1, 2.5)) == ("strongly positive", 1.0)
+    assert L.best_label(TrapezoidalFuzzyNumber(-2.5, -2.1, -0.95, -0.6)) == ("strongly negative", 1.0)
+    assert L.best_label(TrapezoidalFuzzyNumber(0.2, 0.9, 1.2, 1.4)) == ("weakly positive", 1.0)
+    # the scale is applied before the distance is measured
+    assert L.best_label(TrapezoidalFuzzyNumber(-4, -2, 2, 4), scale=2.0) == ("negligible", 1.0)
+    # unchanged behavior when a single label attains the maximum
+    assert L.best_label(TrapezoidalFuzzyNumber.crisp(2.5)) == ("strongly positive", 1.0)
+    assert L.best_label(TrapezoidalFuzzyNumber.crisp(-0.9)) == ("weakly negative", pytest.approx(0.9))
+    np.testing.assert_allclose(L.centers, [-2.0, -1.0, 0.0, 1.0, 2.0])
+    custom = LinguisticLabelSet.with_breakpoints([-1, 0, 1], ["neg", "zero", "pos"])
+    np.testing.assert_allclose(custom.centers, [-1.0, 0.0, 1.0])
+    assert custom.best_label(TrapezoidalFuzzyNumber(-1.5, -1, 1, 1.5)) == ("zero", 1.0)
+
+
+def test_best_label_array_matches_best_label():
+    L = LinguisticLabelSet()
+    rng = np.random.default_rng(4)
+    S = 2.5 * rng.normal(size=(30, 7, 4))
+    Q = fuzzify_array(S, axis=0)
+    idx, deg = L.best_label_array(Q, scale=1.3)
+    assert idx.shape == (7, 4) and deg.shape == (7, 4)
+    prof = L.profile_array(Q, scale=1.3)
+    idx2, deg2 = L.best_label_array(Q, scale=1.3, profile=prof)
+    np.testing.assert_array_equal(idx, idx2)
+    np.testing.assert_allclose(deg, deg2)
+    for i in range(7):
+        for j in range(4):
+            name, degree = L.best_label(tfn_from_quantiles(Q[i, j]), scale=1.3)
+            assert L.names[idx[i, j]] == name
+            assert deg[i, j] == pytest.approx(degree)
+    tied = np.array([[-2, -1, 0, 1, 2], [-3, -2.1, 0, 2.1, 3], [0.6, 0.95, 1.5, 2.1, 2.5]], dtype=float)
+    idx_t, deg_t = L.best_label_array(tied)
+    assert [L.names[i] for i in idx_t] == ["negligible", "negligible", "strongly positive"]
+    np.testing.assert_allclose(deg_t, 1.0)
+
+
+def test_standardization_scale_accepts_numpy_scalars():
+    X = np.array([[1.0, -3.0]])
+    for m in (np.float64(2.0), np.float32(2.0), np.int64(2), np.int32(2), 2, 2.0):
+        assert standardization_scale(X, m) == 2.0
+        assert isinstance(standardization_scale(X, m), float)
+    with pytest.raises(ValueError):
+        standardization_scale(X, np.float32(0.0))
+    with pytest.raises(ValueError):
+        standardization_scale(X, np.int64(-1))
+    for flag in (True, np.bool_(True)):
+        with pytest.raises(ValueError):
+            standardization_scale(X, flag)
+    with pytest.raises(ValueError):
+        standardization_scale(X, "unknown")

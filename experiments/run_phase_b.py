@@ -44,7 +44,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import ResultWriter, flatten_row, load_config, model_classes_from_names, prepare_run, tune_gradient_boosting  # noqa: E402
+from common import PerInstanceWriter, ResultWriter, flatten_row, load_config, model_classes_from_names, prepare_run, tune_gradient_boosting  # noqa: E402
 
 from pfca.attribution import AttributionEngine, output_function, shapley_values  # noqa: E402
 from pfca.evaluation import datasets, protocol  # noqa: E402
@@ -175,7 +175,8 @@ def run_repetition(ds: datasets.Dataset, splits: list, r: int, cfg: dict, out_di
         n_jobs=cfg.get("n_jobs", 1),
         random_state=seed,
     )
-    with measure() as b_pool:
+    trace = bool(cfg.get("trace_memory", False))
+    with measure(trace_memory=trace) as b_pool:
         engine.fit(X_tr, y_tr)
         attr = engine.explain(X_explain)
     rep_attr, rep_mask, rep_info = replicate_attribution(ds, splits, r, ref, X_explain, explain_idx, cfg)
@@ -217,19 +218,22 @@ def run_repetition(ds: datasets.Dataset, splits: list, r: int, cfg: dict, out_di
         **rep_info,
     }
     rows = []
+    matched: dict[str, int] = {}
     for name in applicable_methods(cfg["methods"], ds, cfg):
         out = None
         try:
             if name in protocol.PFCA_VARIANTS:
-                out = protocol.pfca_output(name, engine, attr, ds.feature_names, pfca_kwargs, groups)
+                out = protocol.pfca_output(name, engine, attr, ds.feature_names, pfca_kwargs, groups, trace_memory=trace)
+                if name == "pfca":
+                    matched = protocol.matched_sparsity(out)
             elif name == "shap":
-                out = protocol.shap_output(engine, attr, task, wall=b_pool.wall_seconds / (engine.n_resamples * len(classes)))
+                out = protocol.shap_output(engine, attr, task, wall=b_pool.wall_seconds / (engine.n_resamples * len(classes)), n_retained=matched.get("feature"))
             elif name == "bootstrapped_shap":
-                out = protocol.bootstrapped_shap_output(engine, attr, wall=b_pool.wall_seconds / len(classes))
+                out = protocol.bootstrapped_shap_output(engine, attr, wall=b_pool.wall_seconds / len(classes), n_retained=matched.get("feature"))
             elif name == "grouped_shap":
-                out = protocol.grouped_shap_output(engine, attr, X_explain, groups, task, background_size=cfg.get("grouped_background", 50), random_state=seed)
+                out = protocol.grouped_shap_output(engine, attr, X_explain, groups, task, background_size=cfg.get("grouped_background"), random_state=seed, n_retained=matched.get("concept"), trace_memory=trace)
             elif name == "integrated_gradients":
-                out = protocol.integrated_gradients_output(engine, X_explain, task)
+                out = protocol.integrated_gradients_output(engine, X_explain, task, trace_memory=trace)
             else:
                 raise ValueError(f"unknown method {name}")
             row = protocol.evaluate(out, ctx)
@@ -243,7 +247,7 @@ def run_repetition(ds: datasets.Dataset, splits: list, r: int, cfg: dict, out_di
                 folder = out_dir / "explanations"
                 folder.mkdir(exist_ok=True)
                 out.extra["explanation"].save(str(folder / f"{ds.name}_r{r}_{name}.json"))
-        rows.append(flatten_row(row))
+        rows.append({**flatten_row(row), "per_instance": row.get("per_instance")})
     run_row = {
         **common,
         "split_seed": int(cfg.get("seed", 0)) + r,
@@ -294,6 +298,7 @@ def main(argv=None):
         cfg["n_repeats"] = int(min(int(cfg["n_repeats"]), args.max_repeats))
     out_dir = prepare_run(args.results, args.name, cfg)
     writer = AlignedResultWriter(out_dir / "metrics.csv", ["dataset", "repeat", "method"])
+    per_instance_writer = PerInstanceWriter(out_dir / "per_instance.csv")
     runs = AlignedResultWriter(out_dir / "runs.csv", ["dataset", "repeat"])
     dsets = load_datasets(cfg)
     if not dsets:
@@ -309,6 +314,7 @@ def main(argv=None):
                 continue
             t = time.time()
             rows, run_row = run_repetition(ds, splits, r, cfg, out_dir)
+            per_instance_writer.append_from_rows(rows, ["dataset", "repeat"])
             writer.append(rows)
             run_row["elapsed_seconds"] = time.time() - t
             runs.append([run_row])

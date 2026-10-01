@@ -3,8 +3,8 @@
 Concepts are formed by fuzzy c means clustering applied to the features rather
 than to the instances. Every feature is represented by its profile of absolute
 correlations with all features, so that two features with similar correlation
-patterns are close, or by a factor analytic loading matrix normalized row wise
-when a latent structure is assumed. An a priori grouping, for example the
+patterns are close, or by a varimax rotated factor analytic loading matrix
+normalized row wise when a latent structure is assumed. An a priori grouping, for example the
 subscales of a questionnaire, can be included as an additional candidate
 partition.
 """
@@ -16,7 +16,7 @@ from typing import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
-from scipy.stats import spearmanr
+from scipy.stats import rankdata
 from sklearn.decomposition import FactorAnalysis
 
 from pfca.utils import (
@@ -32,16 +32,24 @@ from pfca.utils import (
 
 
 def correlation_matrix(X: np.ndarray, method: str = "pearson") -> np.ndarray:
-    """Feature by feature correlation matrix with constant features set to zero correlation."""
+    """Feature by feature correlation matrix with constant features set to zero correlation.
+
+    The Spearman matrix is the Pearson matrix of the column ranks, so both
+    methods are computed with numpy and the result always has shape
+    (n_features, n_features), also for one or two features and for a constant
+    feature in any column. Nonfinite values are rejected, because a single
+    missing value would otherwise zero every correlation of its feature and
+    isolate that feature in a concept of its own.
+    """
     X = np.asarray(X, dtype=float)
+    if not np.all(np.isfinite(X)):
+        raise ValueError("X contains NaN or infinite values; impute or remove them before forming concepts.")
     if method == "spearman":
-        R = spearmanr(X).correlation
-        R = np.atleast_2d(R)
-    elif method == "pearson":
-        with np.errstate(invalid="ignore", divide="ignore"):
-            R = np.corrcoef(X, rowvar=False)
-    else:
+        X = rankdata(X, axis=0)
+    elif method != "pearson":
         raise ValueError("method must be 'pearson' or 'spearman'")
+    with np.errstate(invalid="ignore", divide="ignore"):
+        R = np.atleast_2d(np.corrcoef(X, rowvar=False))
     R = np.nan_to_num(R, nan=0.0)
     np.fill_diagonal(R, 1.0)
     return R
@@ -67,7 +75,10 @@ def fuzzy_c_means(
     sum to one, the cluster centers and the final objective value. Several
     random initializations are run and the solution with the smallest
     objective is kept. Clusters are ordered by the index of their first
-    dominant row so that the output is deterministic for a given seed.
+    dominant row so that the output is deterministic for a given seed. The
+    membership update is written in terms of the ratio of every squared
+    distance to the smallest squared distance in its row, which is the same
+    update algebraically but stays finite for fuzzifier values close to one.
     """
     Z = np.asarray(Z, dtype=float)
     n = Z.shape[0]
@@ -89,7 +100,8 @@ def fuzzy_c_means(
             centers = (Um.T @ Z) / np.maximum(Um.sum(axis=0)[:, None], 1e-12)
             D2 = ((Z[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
             D2 = np.maximum(D2, 1e-12)
-            inv = D2 ** (-expo / 2.0)
+            ratio = D2 / D2.min(axis=1, keepdims=True)
+            inv = ratio ** (-expo / 2.0)
             U_new = inv / inv.sum(axis=1, keepdims=True)
             obj = float((U_new**fuzzifier * D2).sum())
             shift = np.abs(U_new - U).max()
@@ -97,9 +109,11 @@ def fuzzy_c_means(
             if shift < tol or abs(obj_prev - obj) < tol * max(1.0, abs(obj)):
                 break
             obj_prev = obj
-        if best is None or obj < best[2]:
+        if best is None or obj < best[2] or not np.isfinite(best[2]):
             best = (U, centers, obj)
     U, centers, obj = best
+    if not np.isfinite(obj) or not np.all(np.isfinite(U)):
+        raise ValueError("Fuzzy c means did not converge to finite memberships; check Z for nonfinite values.")
     order = np.argsort([int(np.argmax(U[:, k])) if np.any(harden(U) == k) else n + k for k in range(K)])
     first_rows = []
     labels = harden(U)
@@ -111,9 +125,16 @@ def fuzzy_c_means(
 
 
 def loading_membership(X: np.ndarray, n_factors: int, random_state=None) -> np.ndarray:
-    """Membership matrix from absolute factor analytic loadings normalized row wise."""
+    """Membership matrix from absolute varimax rotated factor loadings normalized row wise.
+
+    A maximum likelihood factor solution is determined only up to an orthogonal
+    rotation, so the unrotated loadings are not identified and a membership
+    matrix derived from them would depend on an arbitrary representative. The
+    loadings are therefore varimax rotated, which selects the representative
+    with the simplest structure and makes the membership matrix well defined.
+    """
     X = np.asarray(X, dtype=float)
-    fa = FactorAnalysis(n_components=int(n_factors), random_state=random_state)
+    fa = FactorAnalysis(n_components=int(n_factors), rotation="varimax", random_state=random_state)
     fa.fit(X)
     L = np.abs(fa.components_.T)
     L = np.where(L.sum(axis=1, keepdims=True) <= 1e-12, 1.0 / n_factors, L)
@@ -178,6 +199,9 @@ class ConceptPartition:
         How the partition was obtained ('fcm', 'loading', 'apriori', 'identity').
     fuzzifier : float or None
     feature_names : list of str
+        Any sequence of names (list, tuple, pandas Index or array) is accepted
+        and stored as a list. It must hold one name per feature; when empty or
+        None the names default to x0, x1, and so on.
     """
 
     U: np.ndarray
@@ -188,8 +212,12 @@ class ConceptPartition:
 
     def __post_init__(self):
         self.U = check_membership(self.U)
-        if not self.feature_names:
-            self.feature_names = [f"x{j}" for j in range(self.U.shape[0])]
+        names = list(self.feature_names) if self.feature_names is not None else []
+        if len(names) == 0:
+            names = [f"x{j}" for j in range(self.U.shape[0])]
+        elif len(names) != self.U.shape[0]:
+            raise ValueError(f"feature_names has {len(names)} entries but the membership matrix has {self.U.shape[0]} rows.")
+        self.feature_names = names
 
     @property
     def n_concepts(self) -> int:
@@ -234,7 +262,8 @@ class ConceptPartition:
 
 def identity_partition(n_features: int, feature_names: Sequence[str] | None = None) -> ConceptPartition:
     """One crisp concept per feature; PFCA reduces to SHAP on this partition."""
-    return ConceptPartition(np.eye(n_features), "identity", "identity", None, list(feature_names) if feature_names else [])
+    names = list(feature_names) if feature_names is not None else []
+    return ConceptPartition(np.eye(n_features), "identity", "identity", None, names)
 
 
 class ConceptFormer:
@@ -248,8 +277,10 @@ class ConceptFormer:
         Candidate fuzzifier exponents.
     distance : {'correlation', 'loading'}
         'correlation' clusters the absolute correlation profiles with fuzzy c
-        means; 'loading' derives memberships from factor analytic loadings.
+        means; 'loading' derives memberships from varimax rotated factor
+        analytic loadings. Any other value raises ValueError at construction.
     correlation : {'pearson', 'spearman'}
+        Correlation used for the profiles; validated at construction.
     apriori_groups : dict or list, optional
         A priori grouping of features, included as an extra candidate.
     consensus : bool
@@ -273,6 +304,10 @@ class ConceptFormer:
         n_init: int = 5,
         random_state=None,
     ):
+        if distance not in ("correlation", "loading"):
+            raise ValueError("distance must be 'correlation' or 'loading'")
+        if correlation not in ("pearson", "spearman"):
+            raise ValueError("correlation must be 'pearson' or 'spearman'")
         self.n_concepts_grid = tuple(int(k) for k in n_concepts_grid)
         self.fuzzifier_grid = tuple(float(m) for m in fuzzifier_grid)
         self.distance = distance
@@ -285,6 +320,11 @@ class ConceptFormer:
         self.random_state = random_state
 
     def fit(self, X, feature_names: Sequence[str] | None = None):
+        """Form the candidate partitions of the columns of X.
+
+        No value of K satisfies 1 <= K < d when d equals one, so a single
+        feature yields the identity partition as its only candidate.
+        """
         X = np.asarray(X, dtype=float)
         self.X_ = X
         self.n_features_ = X.shape[1]
@@ -303,6 +343,8 @@ class ConceptFormer:
                     self.candidates_.append(self.partition(K, m))
         if self.apriori_groups is not None:
             self.candidates_.append(self.apriori_partition())
+        if not self.candidates_ and self.n_features_ == 1:
+            self.candidates_.append(identity_partition(1, self.feature_names_))
         if not self.candidates_:
             raise ValueError("No candidate partition could be formed; check n_concepts_grid against the number of features.")
         return self

@@ -100,13 +100,26 @@ def test_duplication_invariance_fitted_model():
 
 
 def test_monotonicity_of_front_and_selection_membership(small_problem):
-    """Property 6: complexity is non decreasing in alpha for fixed sparsity and selection membership lies in [0, 1]."""
+    """Property 6: complexity is non decreasing in alpha for every fixed sparsity and selection membership lies in [0, 1]."""
     p, X_test = small_problem
     ex = PFCAExplainer(model_classes=[("gbm", GradientBoostingRegressor(n_estimators=40))], n_resamples=6, background_size=50, n_concepts_grid=(3,), fuzzifier_grid=(2.0,), alpha_grid=(0.0, 0.25, 0.5, 0.75, 1.0), random_state=0)
     e = ex.fit(p.X, p.y).explain(X_test)
     t = e.selection.table
-    K = 3
-    sub = t[t["sparsity"] == K].sort_values("alpha")
-    assert np.all(np.diff(sub["complexity"].to_numpy()) >= -1e-12)
+    assert e.partition.fuzziness.max() > 0.0  # the partition is fuzzy, so a swap of concepts would change complexity
+    for (partition, sparsity), sub in t.groupby(["partition", "sparsity"]):
+        sub = sub.sort_values("alpha")
+        assert np.all(np.diff(sub["complexity"].to_numpy()) >= -1e-12), (partition, sparsity)
+        previous = set()
+        for retained in sub["retained"]:
+            assert previous.issubset(set(retained)), (partition, sparsity)
+            previous = set(retained)
     assert np.all((e.feature_selection_membership >= 0) & (e.feature_selection_membership <= 1))
     assert np.all((e.concept_selection_membership >= 0) & (e.concept_selection_membership <= 1))
+    # Section 3.5: the membership of a concept is the proportion of distinct Pareto optimal explanations retaining it
+    distinct = e.selection.distinct_front
+    counts = np.zeros(e.n_concepts)
+    for retained in distinct["retained"]:
+        counts[list(retained)] += 1
+    section_35 = e.selection.concept_selection_memberships[e.partition.name]
+    np.testing.assert_allclose(section_35, counts / len(distinct))
+    assert np.all((section_35 >= 0) & (section_35 <= 1))

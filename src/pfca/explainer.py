@@ -10,6 +10,7 @@ Usage
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -18,7 +19,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator
 
 from pfca.attribution import AttributionEngine, AttributionResult, aggregate_to_concepts, redistribute_to_features
-from pfca.concepts import ConceptFormer, ConceptPartition, identity_partition
+from pfca.concepts import ConceptFormer, ConceptPartition, correlation_matrix, correlation_profile_embedding, identity_partition
 from pfca.fuzzification import (
     IntervalType2FuzzyNumber,
     LinguisticLabelSet,
@@ -127,10 +128,13 @@ class PFCAExplanation:
         return [tfn_from_quantiles(q) for q in self.global_quantiles]
 
     def best_labels(self) -> tuple[np.ndarray, np.ndarray]:
-        """Most compatible label index and degree for every instance and concept."""
-        idx = np.argmax(self.linguistic, axis=-1)
-        deg = np.take_along_axis(self.linguistic, idx[..., None], axis=-1)[..., 0]
-        return idx, deg
+        """Most compatible label index and degree for every instance and concept.
+
+        Ties at the maximal compatibility are broken by the tie breaking rule
+        of :meth:`LinguisticLabelSet.best_label` (the label whose center is
+        closest to the centroid of the standardized attribution).
+        """
+        return self.label_set.best_label_array(self.quantiles, self.scale, profile=self.linguistic)
 
     def instance_frame(self, instance: int) -> pd.DataFrame:
         """Table with one row per concept for an explained instance."""
@@ -237,6 +241,8 @@ class PFCAExplanation:
             "feature_selection_membership": self.feature_selection_membership.tolist(),
             "concept_selection_membership": self.concept_selection_membership.tolist(),
             "front": json.loads(self.selection.front.to_json(orient="records")),
+            "classes": None if self.attribution.classes is None else np.asarray(self.attribution.classes).tolist(),
+            "explained_class": self.attribution.explained_class,
         }
 
     def save(self, path: str) -> None:
@@ -259,6 +265,11 @@ class PFCAExplainer(BaseEstimator):
         Background sample size for the Shapley computation.
     explainer : {'auto', 'tree', 'linear', 'kernel', 'exact', 'permutation'}
     n_concepts_grid : iterable of int
+        Candidate numbers of concepts K. A value equal to the number of
+        features d gives the identity partition (one crisp concept per
+        feature, the K = d case of the reduction to SHAP), which is also the
+        fallback when no other data driven candidate can be formed; values
+        outside 1 to d are ignored with a warning.
     fuzzifier_grid : iterable of float
     concept_distance : {'correlation', 'loading'}
     correlation : {'pearson', 'spearman'}
@@ -285,7 +296,11 @@ class PFCAExplainer(BaseEstimator):
     knee_method : {'utopia', 'hyperplane'}
     surrogate : {'linear', 'tree'}
     task : {'auto', 'regression', 'classification'}
-    target_class : int
+        See :class:`pfca.attribution.AttributionEngine`.
+    target_class : int or label
+        Class whose probability is explained for classifiers, given as one of
+        the class labels or as an index into the sorted classes; the resolved
+        class is exposed as ``classes_`` and ``target_class_`` after fitting.
     n_jobs : int
     random_state : int or None
     """
@@ -391,6 +406,16 @@ class PFCAExplainer(BaseEstimator):
     def reference_model_(self):
         return self.engine_.reference_model_
 
+    @property
+    def classes_(self):
+        """Sorted class labels of the fitted engine (classification only)."""
+        return self.engine_.classes_
+
+    @property
+    def target_class_(self):
+        """Index into ``classes_`` of the explained class; None for regression."""
+        return self.engine_.target_class_
+
     # ------------------------------------------------------------------
     def _partition_pool(self, partition: ConceptPartition, attr: AttributionResult) -> PartitionPool:
         concept = aggregate_to_concepts(attr.values, partition.U)
@@ -403,8 +428,32 @@ class PFCAExplainer(BaseEstimator):
 
     @classmethod
     def from_engine(cls, engine: AttributionEngine, feature_names: Sequence[str] | None = None, **kwargs) -> "PFCAExplainer":
-        """Build an explainer around an already fitted attribution engine (shares the pool of models)."""
-        obj = cls(model_classes=engine.model_classes, n_resamples=engine.n_resamples, background_size=engine.background_size, explainer=engine.explainer, task=engine.task, target_class=engine.target_class, n_jobs=engine.n_jobs, random_state=engine.random_state, **kwargs)
+        """Build an explainer around an already fitted attribution engine (shares the pool of models).
+
+        The engine level parameters (model_classes, n_resamples,
+        background_size, explainer, task, target_class, kernel_nsamples,
+        permutation_max_evals, n_jobs, random_state and verbose) are copied
+        from the engine so that ``get_params`` describes the pool that was
+        fitted. Any constructor argument, including these, may be given as a
+        keyword argument and then takes precedence; a random_state override
+        affects the concept formation and the Pareto selection only, since
+        the pool is not refitted.
+        """
+        init_kwargs = dict(
+            model_classes=engine.model_classes,
+            n_resamples=engine.n_resamples,
+            background_size=engine.background_size,
+            explainer=engine.explainer,
+            task=engine.task,
+            target_class=engine.target_class,
+            kernel_nsamples=engine.kernel_nsamples,
+            permutation_max_evals=engine.permutation_max_evals,
+            n_jobs=engine.n_jobs,
+            random_state=engine.random_state,
+            verbose=engine.verbose,
+        )
+        init_kwargs.update(kwargs)
+        obj = cls(**init_kwargs)
         X = engine.X_train_
         obj.engine_ = engine
         obj.task_ = engine.task_
@@ -412,28 +461,55 @@ class PFCAExplainer(BaseEstimator):
         obj._fit_partitions(X)
         return obj
 
+    def _candidate_partition(self, n_concepts: int, fuzzifier: float | None) -> ConceptPartition:
+        """Candidate partition with K concepts; K equal to the number of features is the identity partition."""
+        K = int(n_concepts)
+        if K == self.n_features_in_:
+            return identity_partition(K, self.feature_names_)
+        return self.former_.partition(K, fuzzifier)
+
     def _fit_partitions(self, X: np.ndarray) -> None:
         d = X.shape[1]
-        grid = [int(k) for k in self.n_concepts_grid if 1 <= int(k) < d]
-        if not grid and self.partition_source != "apriori":
-            grid = [d - 1] if d > 1 else []
+        names = self.feature_names_
         if self.partition_source == "apriori" and self.apriori_groups is None:
             raise ValueError("partition_source='apriori' requires apriori_groups.")
+        data_driven = self.partition_source != "apriori"
+        use_apriori = self.apriori_groups is not None and self.partition_source in ("apriori", "both")
+        requested = [int(k) for k in self.n_concepts_grid] if data_driven else []
+        grid = [k for k in requested if 1 <= k < d]
+        dropped = sorted({k for k in requested if k < 1 or k > d})
+        if dropped:
+            warnings.warn(f"n_concepts_grid values {dropped} lie outside 1 to {d} (the number of features) and are ignored.", UserWarning, stacklevel=3)
+        # K = d is the identity partition; it is also the fallback when no K is admissible for fuzzy c means
+        identity_requested = data_driven and (d in requested or not grid)
         self.former_ = ConceptFormer(
-            n_concepts_grid=grid if self.partition_source != "apriori" else (),
+            n_concepts_grid=grid,
             fuzzifier_grid=self.fuzzifier_grid,
             distance=self.concept_distance,
             correlation=self.correlation,
-            apriori_groups=self.apriori_groups if self.partition_source in ("apriori", "both") else None,
+            apriori_groups=self.apriori_groups if use_apriori else None,
             consensus=self.consensus,
             crisp=self.crisp_concepts,
             random_state=self.random_state,
         )
-        if d == 1:
-            self.former_.n_concepts_grid = ()
-        self.former_.fit(X, self.feature_names_)
-        if d == 1 and not self.former_.candidates_:
-            self.former_.candidates_ = [identity_partition(1, self.feature_names_)]
+        if d > 1 and (grid or use_apriori):
+            self.former_.fit(X, names)
+        else:
+            # ConceptFormer.fit raises when it can form no candidate, which is the
+            # case for an empty grid without a priori groups; the former is
+            # initialized here without clustering
+            self.former_.X_ = X
+            self.former_.n_features_ = d
+            self.former_.feature_names_ = list(names)
+            self.former_._cache = {}
+            self.former_.candidates_ = []
+            if d > 1:
+                self.former_.embedding_ = correlation_profile_embedding(X, self.correlation)
+                self.former_.correlation_ = correlation_matrix(X, self.correlation)
+            if use_apriori:
+                self.former_.candidates_.append(self.former_.apriori_partition())
+        if identity_requested:
+            self.former_.candidates_.append(identity_partition(d, names))
         self.X_train_ = X
         self.n_features_in_ = d
 
@@ -475,22 +551,35 @@ class PFCAExplainer(BaseEstimator):
             if fc.get("partition") == "apriori":
                 part = self.former_.apriori_partition()
             else:
-                part = self.former_.partition(int(fc["n_concepts"]), fc.get("fuzzifier", 2.0))
+                part = self._candidate_partition(int(fc["n_concepts"]), fc.get("fuzzifier", 2.0))
             pp = get_pool(part)
             selector.alpha_grid = (float(fc.get("alpha", 0.0)),)
             selector.sparsity_grid = (int(fc.get("sparsity", part.n_concepts)),)
             selection = selector.run_grid({part.name: pp}, output)
         elif self.solver == "nsga2":
-            fcm_grid = [int(k) for k in self.n_concepts_grid if 1 <= int(k) < self.n_features_in_]
-            extra = ("apriori",) if (self.apriori_groups is not None and self.partition_source in ("apriori", "both")) else ()
+            # the K values actually fitted by fuzzy c means bound the search; the
+            # a priori and identity partitions enter NSGA II as extra sources
+            fcm_grid = [int(k) for k in self.former_.n_concepts_grid]
+            extra = ()
+            if self.apriori_groups is not None and self.partition_source in ("apriori", "both"):
+                extra += ("apriori",)
+            if any(p.method == "identity" for p in self.former_.candidates_):
+                extra += ("identity",)
 
             def provider(K, m, source):
                 if source == "apriori":
                     return get_pool(self.former_.apriori_partition())
-                return get_pool(self.former_.partition(int(K), None if self.concept_distance == "loading" else float(m)))
+                if source == "identity":
+                    return get_pool(identity_partition(self.n_features_in_, self.feature_names_))
+                return get_pool(self._candidate_partition(int(K), None if self.concept_distance == "loading" else float(m)))
 
             if self.partition_source == "apriori":
                 selection = selector.run_grid({"apriori": get_pool(self.former_.apriori_partition())}, output)
+            elif not fcm_grid:
+                # nothing for NSGA II to search over: evaluate the candidates exhaustively
+                for part in self.former_.candidates_:
+                    get_pool(part)
+                selection = selector.run_grid(pools, output)
             else:
                 selection = selector.run_nsga2(provider, (min(fcm_grid), max(fcm_grid)), tuple(float(m) for m in self.fuzzifier_grid), output, extra)
         else:
@@ -514,7 +603,10 @@ class PFCAExplainer(BaseEstimator):
         G = [tfn_from_quantiles(q) for q in pp.global_quantiles]
         poss = possibility_matrix(G)
         ranking, dominance = fuzzy_ranking(G)
-        csm = concept_selection_membership(partition.U, selection.feature_selection_membership)
+        try:
+            csm = selection.concept_membership(cfg.partition)
+        except (KeyError, AttributeError):
+            csm = concept_selection_membership(partition.U, selection.feature_selection_membership)
         return PFCAExplanation(
             partition=partition,
             configuration=cfg,

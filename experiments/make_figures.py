@@ -490,7 +490,7 @@ def item_phase_b(dfb: pd.DataFrame, tab_dir: Path) -> list[Path]:
         if REFERENCE_METHOD in complete.columns and complete.shape[1] >= 2 and complete.shape[0] >= 1:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", RuntimeWarning)
-                w = wilcoxon_holm(complete, REFERENCE_METHOD)
+                w = wilcoxon_holm(complete, REFERENCE_METHOD, random_state=EFFECT_SIZE_RANDOM_STATE)
             for _, r in w.iterrows():
                 rec = {"metric": col, "higher_is_better": higher}
                 rec.update({k: (json.dumps([float(x) for x in v]) if isinstance(v, tuple) else v) for k, v in r.items()})

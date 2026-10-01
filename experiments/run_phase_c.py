@@ -55,7 +55,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import ROOT, ResultWriter, flatten_row, load_config, model_classes_from_names, prepare_run, tune_gradient_boosting  # noqa: E402
+from common import PerInstanceWriter, ROOT, ResultWriter, flatten_row, load_config, model_classes_from_names, prepare_run, tune_gradient_boosting  # noqa: E402
 
 from pfca.attribution import AttributionEngine, aggregate_to_concepts, output_function, shapley_values  # noqa: E402
 from pfca.concepts import apriori_membership  # noqa: E402
@@ -284,7 +284,8 @@ def run_repeat(ds: Dataset, split: tuple, next_train: np.ndarray | None, cfg: di
     classes = model_classes_from_names(cfg["model_classes"], task, seed)
     classes[0] = ("gbm", ref.__class__(**ref.get_params()))
     engine = AttributionEngine(model_classes=classes, n_resamples=cfg["n_resamples"], background_size=cfg["background_size"], explainer=cfg.get("explainer", "auto"), task=task, n_jobs=cfg.get("n_jobs", 1), random_state=seed)
-    with measure() as b_pool:
+    trace = bool(cfg.get("trace_memory", False))
+    with measure(trace_memory=trace) as b_pool:
         engine.fit(X_tr, y_tr)
         attr = engine.explain(X_explain)
     test_scores = reference_test_scores(engine.reference_model_, X_test, y_test, task)
@@ -334,17 +335,20 @@ def run_repeat(ds: Dataset, split: tuple, next_train: np.ndarray | None, cfg: di
     }
     outputs = {}
     rows = []
+    matched: dict[str, int] = {}
     for name in cfg["methods"]:
         out = None
         try:
             if name in protocol.PFCA_VARIANTS:
-                out = protocol.pfca_output(name, engine, attr, ds.feature_names, pfca_kwargs, groups)
+                out = protocol.pfca_output(name, engine, attr, ds.feature_names, pfca_kwargs, groups, trace_memory=trace)
+                if name == "pfca":
+                    matched = protocol.matched_sparsity(out)
             elif name == "shap":
-                out = protocol.shap_output(engine, attr, task, wall=b_pool.wall_seconds / (engine.n_resamples * len(classes)))
+                out = protocol.shap_output(engine, attr, task, wall=b_pool.wall_seconds / (engine.n_resamples * len(classes)), n_retained=matched.get("feature"))
             elif name == "bootstrapped_shap":
-                out = protocol.bootstrapped_shap_output(engine, attr, wall=b_pool.wall_seconds / len(classes))
+                out = protocol.bootstrapped_shap_output(engine, attr, wall=b_pool.wall_seconds / len(classes), n_retained=matched.get("feature"))
             elif name == "grouped_shap":
-                out = protocol.grouped_shap_output(engine, attr, X_explain, groups, task, background_size=cfg.get("grouped_background", 50), random_state=seed)
+                out = protocol.grouped_shap_output(engine, attr, X_explain, groups, task, background_size=cfg.get("grouped_background"), random_state=seed, n_retained=matched.get("concept"), trace_memory=trace)
             elif name == "integrated_gradients":
                 out = protocol.integrated_gradients_output(engine, X_explain, task)
             else:
@@ -368,7 +372,7 @@ def run_repeat(ds: Dataset, split: tuple, next_train: np.ndarray | None, cfg: di
         res.update(common)
         if name in protocol.PFCA_VARIANTS and "explanation" in getattr(out, "extra", {}):
             res["pfca_wall_seconds"] = out.wall_seconds + b_pool.wall_seconds
-        rows.append(flatten_row(res))
+        rows.append({**flatten_row(res), "per_instance": res.get("per_instance")})
 
     # per construct reliability table and example outputs of the full method
     table = None
@@ -430,6 +434,7 @@ def main(argv=None):
     ds = load_questionnaire(str(csv_path), str(spec_path))
     out_dir = prepare_run(args.results, args.name, cfg)
     writer = ResultWriter(out_dir / "metrics.csv", ["repeat", "method"])
+    per_instance_writer = PerInstanceWriter(out_dir / "per_instance.csv")
     rel_writer = ResultWriter(out_dir / "reliability.csv", RELIABILITY_KEYS)
     n_repeats = int(cfg["n_repeats"])
     splits = list(stratified_splits(ds.y, ds.task, n_repeats=n_repeats, random_state=int(cfg.get("split_seed", 0))))
@@ -445,6 +450,7 @@ def main(argv=None):
         t = time.time()
         next_train = splits[(i + 1) % len(splits)][1] if len(splits) > 1 else None  # a single repetition has no independent replicate
         rows, table = run_repeat(ds, split, next_train, cfg, out_dir)
+        per_instance_writer.append_from_rows(rows, ["repeat"])
         writer.append(rows)
         if table is not None:
             rel_writer.append([row for row in table.to_dict(orient="records") if not rel_writer.is_done(row)])
