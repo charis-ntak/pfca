@@ -1,0 +1,7 @@
+Source,Group,n,front size,distinct explanations,fraction collapsed,"corr(fidelity, complexity)","corr(fidelity, instability)","corr(complexity, instability)"
+Phase A,additive,24,66.67,13.33,0.00,-0.71,-0.19,0.55
+Phase A,interaction,20,64.90,12.95,0.00,-0.67,-0.11,0.52
+Phase A,redundancy,15,63.07,12.60,0.00,-0.73,-0.14,0.50
+Phase A,all families,59,65.15,13.02,0.00,-0.70,-0.15,0.53
+"sensitivity, solver",grid,4,86.25,17.25,0.00,-0.88,-0.60,0.77
+"sensitivity, solver",nsga2,4,647.75,17.75,0.00,-0.87,-0.67,0.77

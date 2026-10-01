@@ -1,0 +1,70 @@
+Family,Metric,Method,Estimate,SE,95% CI,p
+additive,recovery error,Bootstrapped SHAP,-0.030,0.040,"[-0.108, 0.049]",0.460
+additive,recovery error,Grouped SHAP,+0.000,0.040,"[-0.079, 0.079]",0.996
+additive,recovery error,LIME,+0.953,0.040,"[0.874, 1.031]",<0.001
+additive,recovery error,PFCA,+0.386,0.040,"[0.307, 0.465]",<0.001
+additive,recovery error,"PFCA, a priori",-0.041,0.040,"[-0.120, 0.038]",0.309
+additive,recovery error,"PFCA, crisp",+0.156,0.040,"[0.078, 0.235]",<0.001
+additive,recovery error,"PFCA, fixed",+0.015,0.040,"[-0.063, 0.094]",0.700
+additive,recovery error,"PFCA, single class",+0.354,0.040,"[0.275, 0.432]",<0.001
+additive,rank stability,Bootstrapped SHAP,-0.000,0.049,"[-0.097, 0.097]",1.000
+additive,rank stability,Grouped SHAP,+0.355,0.049,"[0.258, 0.451]",<0.001
+additive,rank stability,PFCA,+0.354,0.049,"[0.258, 0.451]",<0.001
+additive,rank stability,"PFCA, a priori",+0.342,0.049,"[0.246, 0.439]",<0.001
+additive,rank stability,"PFCA, crisp",+0.475,0.049,"[0.378, 0.571]",<0.001
+additive,rank stability,"PFCA, fixed",+0.133,0.049,"[0.036, 0.230]",0.007
+additive,rank stability,"PFCA, single class",+0.385,0.049,"[0.288, 0.481]",<0.001
+additive,deletion auc,Bootstrapped SHAP,-0.004,0.029,"[-0.062, 0.053]",0.878
+additive,deletion auc,Grouped SHAP,-0.076,0.029,"[-0.133, -0.019]",0.009
+additive,deletion auc,LIME,+0.093,0.029,"[0.036, 0.150]",0.001
+additive,deletion auc,PFCA,+0.084,0.029,"[0.027, 0.141]",0.004
+additive,deletion auc,"PFCA, a priori",-0.064,0.029,"[-0.121, -0.007]",0.027
+additive,deletion auc,"PFCA, crisp",-0.009,0.029,"[-0.066, 0.048]",0.755
+additive,deletion auc,"PFCA, fixed",+0.132,0.029,"[0.075, 0.189]",<0.001
+additive,deletion auc,"PFCA, single class",+0.071,0.029,"[0.014, 0.129]",0.014
+interaction,recovery error,Bootstrapped SHAP,-0.045,0.039,"[-0.122, 0.032]",0.256
+interaction,recovery error,Grouped SHAP,-0.001,0.039,"[-0.078, 0.076]",0.977
+interaction,recovery error,LIME,+0.844,0.039,"[0.767, 0.921]",<0.001
+interaction,recovery error,PFCA,+0.238,0.039,"[0.161, 0.315]",<0.001
+interaction,recovery error,"PFCA, a priori",-0.068,0.039,"[-0.145, 0.009]",0.085
+interaction,recovery error,"PFCA, crisp",+0.065,0.039,"[-0.012, 0.142]",0.100
+interaction,recovery error,"PFCA, fixed",-0.011,0.039,"[-0.088, 0.066]",0.786
+interaction,recovery error,"PFCA, single class",+0.214,0.039,"[0.137, 0.291]",<0.001
+interaction,rank stability,Bootstrapped SHAP,+0.000,0.057,"[-0.112, 0.112]",1.000
+interaction,rank stability,Grouped SHAP,+0.394,0.057,"[0.281, 0.506]",<0.001
+interaction,rank stability,PFCA,+0.342,0.057,"[0.230, 0.455]",<0.001
+interaction,rank stability,"PFCA, a priori",+0.392,0.057,"[0.280, 0.504]",<0.001
+interaction,rank stability,"PFCA, crisp",+0.504,0.057,"[0.392, 0.617]",<0.001
+interaction,rank stability,"PFCA, fixed",+0.124,0.057,"[0.012, 0.237]",0.030
+interaction,rank stability,"PFCA, single class",+0.292,0.057,"[0.179, 0.404]",<0.001
+interaction,deletion auc,Bootstrapped SHAP,-0.006,0.033,"[-0.071, 0.059]",0.858
+interaction,deletion auc,Grouped SHAP,-0.067,0.033,"[-0.132, -0.003]",0.042
+interaction,deletion auc,LIME,+0.107,0.033,"[0.042, 0.172]",0.001
+interaction,deletion auc,PFCA,+0.094,0.033,"[0.030, 0.159]",0.004
+interaction,deletion auc,"PFCA, a priori",-0.049,0.033,"[-0.114, 0.016]",0.139
+interaction,deletion auc,"PFCA, crisp",-0.020,0.033,"[-0.085, 0.045]",0.548
+interaction,deletion auc,"PFCA, fixed",+0.146,0.033,"[0.081, 0.211]",<0.001
+interaction,deletion auc,"PFCA, single class",+0.074,0.033,"[0.009, 0.139]",0.025
+redundancy,recovery error,Bootstrapped SHAP,-0.048,0.047,"[-0.140, 0.043]",0.302
+redundancy,recovery error,Grouped SHAP,+0.000,0.047,"[-0.092, 0.092]",0.995
+redundancy,recovery error,LIME,+0.919,0.047,"[0.827, 1.010]",<0.001
+redundancy,recovery error,PFCA,+0.217,0.047,"[0.125, 0.309]",<0.001
+redundancy,recovery error,"PFCA, a priori",-0.066,0.047,"[-0.158, 0.026]",0.161
+redundancy,recovery error,"PFCA, crisp",+0.110,0.047,"[0.018, 0.202]",0.019
+redundancy,recovery error,"PFCA, fixed",-0.001,0.047,"[-0.093, 0.091]",0.984
+redundancy,recovery error,"PFCA, single class",+0.193,0.047,"[0.101, 0.285]",<0.001
+redundancy,rank stability,Bootstrapped SHAP,-0.000,0.054,"[-0.106, 0.106]",1.000
+redundancy,rank stability,Grouped SHAP,+0.378,0.054,"[0.272, 0.484]",<0.001
+redundancy,rank stability,PFCA,+0.513,0.054,"[0.407, 0.619]",<0.001
+redundancy,rank stability,"PFCA, a priori",+0.372,0.054,"[0.266, 0.478]",<0.001
+redundancy,rank stability,"PFCA, crisp",+0.526,0.054,"[0.420, 0.633]",<0.001
+redundancy,rank stability,"PFCA, fixed",+0.153,0.054,"[0.047, 0.259]",0.005
+redundancy,rank stability,"PFCA, single class",+0.378,0.054,"[0.272, 0.484]",<0.001
+redundancy,deletion auc,Bootstrapped SHAP,-0.025,0.032,"[-0.088, 0.038]",0.439
+redundancy,deletion auc,Grouped SHAP,-0.083,0.032,"[-0.146, -0.020]",0.010
+redundancy,deletion auc,LIME,+0.102,0.032,"[0.039, 0.165]",0.001
+redundancy,deletion auc,PFCA,+0.048,0.032,"[-0.015, 0.111]",0.132
+redundancy,deletion auc,"PFCA, a priori",-0.068,0.032,"[-0.130, -0.005]",0.035
+redundancy,deletion auc,"PFCA, crisp",+0.008,0.032,"[-0.055, 0.071]",0.802
+redundancy,deletion auc,"PFCA, fixed",+0.069,0.032,"[0.006, 0.132]",0.031
+redundancy,deletion auc,"PFCA, single class",+0.074,0.032,"[0.011, 0.137]",0.022

@@ -1,0 +1,12 @@
+Criterion,Phase,Quantity,PFCA,Reference,Effect or p,Status
+1,"A, redundancy family",recovery error,0.699,0.482,0.835 (Cohen d),not met
+1,"A, redundancy family",rank stability,0.986,0.474,4.065 (Cohen d),met
+2,B,deletion auc,0.639,0.814,,met
+2,B,insertion auc,0.765,0.992,,not met
+2,B,surrogate r2,0.970,1.000,,not met
+3,A,support coverage truth,0.619,0.900,,not met
+3,A,core coverage truth,0.299,0.500,,not met
+3,A,support coverage replicate,0.700,0.900,,not met
+3,A,core coverage replicate,0.346,0.500,,not met
+3,B,support coverage replicate,0.810,0.900,,not met
+3,B,core coverage replicate,0.444,0.500,,not met

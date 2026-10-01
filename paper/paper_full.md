@@ -111,7 +111,17 @@ In terms of faithfulness, the deletion AUC of PFCA was 0.639 (SD 0.050) against 
 
 Rank stability was 1.000 (0.000) for PFCA and its single class variant, 0.987 (0.029) for the crisp variant, 0.862 (0.061) for the fixed configuration and 0.507 (0.033) for both feature level SHAP and bootstrapped SHAP. Perturbation stability, where lower values indicate a smaller change of the attribution relative to the change of the output, was 1.532 (0.389) for PFCA, 2.223 (0.606) for SHAP, 3.055 (0.261) for bootstrapped SHAP and 0.391 (0.384) for LIME. The replicate attribution fell inside the fuzzy support of PFCA in 81.0 percent (SD 11.2) of the cases and inside the core in 44.4 percent (10.4), against 85.0 and 56.6 percent for the bootstrapped SHAP intervals. The expected calibration error of the sign confidence was 0.075 for PFCA, 0.065 for the crisp variant, 0.050 for the single class variant and 0.093 for bootstrapped SHAP. Three of the 200 fuzzy attributions per repetition (100 instances by two concepts) were upgraded to interval type 2 sets. The explanation step of PFCA took 10.1 s per repetition after a shared pool of 18.5 s, against 0.46 s for feature level SHAP, 9.3 s for bootstrapped SHAP and 1.05 s for LIME.
 
-{{tab:phaseb}}
+::table tab:phaseb | Faithfulness, stability, calibration and cost on the breast cancer dataset, mean (SD) over 5 repetitions of the split
+Method | deletion AUC | insertion AUC | surrogate R2 | rank stability | perturbation stability | support coverage | core coverage | time (s)
+PFCA | 0.639 (0.050) | 0.765 (0.037) | 0.970 (0.010) | 1.000 (0.000) | 1.532 (0.389) | 0.810 (0.112) | 0.444 (0.104) | 10.082 (0.639)
+SHAP | 0.814 (0.105) | 0.992 (0.006) | 1.000 (0.000) | 0.507 (0.033) | 2.223 (0.606) |  |  | 0.463 (0.069)
+Bootstrapped SHAP | 0.819 (0.099) | 0.990 (0.008) | 0.976 (0.023) | 0.507 (0.033) | 3.055 (0.261) | 0.850 (0.031) | 0.566 (0.048) | 9.265 (1.371)
+LIME | 0.902 (0.041) | 0.976 (0.006) | -0.168 (0.089) |  | 0.391 (0.384) |  |  | 1.050 (0.112)
+PFCA, crisp | 0.656 (0.059) | 0.781 (0.077) | 0.979 (0.012) | 0.987 (0.029) | 1.657 (0.411) | 0.780 (0.130) | 0.439 (0.172) | 10.113 (0.778)
+PFCA, single class | 0.645 (0.045) | 0.769 (0.042) | 0.975 (0.013) | 1.000 (0.000) | 1.464 (0.644) | 0.842 (0.111) | 0.509 (0.159) | 8.798 (0.406)
+PFCA, fixed | 0.809 (0.039) | 0.919 (0.024) | 0.978 (0.013) | 0.862 (0.061) | 1.979 (0.266) | 0.738 (0.141) | 0.325 (0.110) | 5.433 (0.259)
+Note: Surrogate R2 is computed on the retained items at the sparsity of the PFCA knee. Time is the wall clock time of the explanation step after the shared pool.
+::end
 
 ## 3.3. Simulated questionnaire
 [[tab:phasec]] reports the results on the simulated questionnaire over five repetitions; the reference model reached a test $R^2$ of 0.529. The knee point of PFCA selected 2.2 concepts on average and retained 1.8 of them, from a front of 82.0 configurations (16.4 distinct explanations) among 445 evaluated, which includes the a priori subscale partition as a candidate. The adjusted Rand index between the hardened PFCA partition and the five a priori subscales was 0.347 (0.130), and 0.285 (0.085) for the crisp variant; it equals one by construction for the a priori ablation and the grouped baseline.
@@ -120,9 +130,27 @@ On faithfulness, the deletion AUC was 0.346 (0.065) for PFCA against 0.207 (0.03
 
 [[tab:reliability]] gives the reliability of the attributions per construct. For PFCA the relative support width of the concept matched to each subscale was 1.28 for anxiety, 1.36 for rumination, 2.07 for self efficacy and 1.95 for social support, with sign confidences of 0.903, 0.907, 0.869 and 0.887, disagreement indices of 0.110, 0.115, 0.146 and 0.190, and fractions of type 2 attributions between 0.013 and 0.055. The share of the membership mass of the matched concept that belonged to the subscale was 0.865 for rumination, 0.554 for anxiety, 0.413 for social support and 0.357 for self efficacy. For bootstrapped SHAP summed over the items of a subscale the relative widths were 0.825, 1.106, 1.417 and 2.550 with sign confidences of 0.931, 0.921, 0.905 and 0.790.
 
-{{tab:phasec}}
+::table tab:phasec | Concept recovery, faithfulness, stability and calibration on the simulated questionnaire, mean (SD) over 5 repetitions
+Method | ARI vs subscales | deletion AUC | insertion AUC | surrogate R2 | rank stability | support coverage | type 2 attributions
+PFCA | 0.347 (0.130) | 0.346 (0.065) | 0.626 (0.038) | 0.890 (0.092) | 0.933 (0.149) | 0.838 (0.058) | 5.6 (2.6)
+SHAP | 0.000 (0.000) | 0.207 (0.037) | 0.953 (0.021) | 0.989 (0.017) | 0.517 (0.022) |  | 
+Bootstrapped SHAP | 0.000 (0.000) | 0.206 (0.025) | 0.954 (0.024) | 0.948 (0.030) | 0.517 (0.022) | 0.810 (0.036) | 
+Grouped SHAP | 1.000 (0.000) | 0.177 (0.045) | 0.773 (0.013) | 0.694 (0.111) | 0.848 (0.035) |  | 
+LIME | 0.000 (0.000) | 0.373 (0.046) | 0.759 (0.022) | -0.019 (0.069) |  |  | 
+PFCA, crisp | 0.285 (0.085) | 0.328 (0.027) | 0.612 (0.021) | 0.853 (0.124) | 1.000 (0.000) | 0.835 (0.059) | 5.0 (1.0)
+PFCA, single class | 0.347 (0.130) | 0.343 (0.075) | 0.627 (0.050) | 0.901 (0.096) | 0.955 (0.100) | 0.808 (0.046) | 0.0 (0.0)
+PFCA, a priori | 1.000 (0.000) | 0.188 (0.045) | 0.765 (0.009) | 0.694 (0.076) | 0.843 (0.018) | 0.806 (0.065) | 21.2 (7.8)
+Note: ARI vs subscales is the adjusted Rand index between the hardened partition of the method and the a priori subscales; it equals one by construction for the a priori partition and the grouped baseline.
+::end
 
-{{tab:reliability}}
+::table tab:reliability | Reliability of the attribution per construct on the simulated questionnaire, mean over repetitions
+Construct | PFCA relative support width | PFCA sign confidence | PFCA disagreement | PFCA fraction type 2 | PFCA overlap with subscale | Bootstrapped SHAP relative support width | Bootstrapped SHAP sign confidence
+anxiety | 1.278 | 0.903 | 0.110 | 0.013 | 0.554 | 0.825 | 0.931
+rumination | 1.355 | 0.907 | 0.115 | 0.020 | 0.865 | 1.106 | 0.921
+self efficacy | 2.067 | 0.869 | 0.146 | 0.055 | 0.357 | 1.417 | 0.905
+social support | 1.945 | 0.887 | 0.190 | 0.040 | 0.413 | 2.550 | 0.790
+Note: For PFCA every retained concept is matched to the subscale with which it shares most membership mass (overlap). The relative support width is the width of the 5th to 95th percentile interval divided by the absolute median attribution; for bootstrapped SHAP the feature level values of the items of a subscale are summed before the width is computed.
+::end
 
 [[fig:phasec_fuzzy]] shows the fuzzy attributions of the first explained instance of the first repetition, whose predicted outcome was 70, and [[fig:phasec_overlap]] the overlap of the two concepts with the subscales. The first concept, which collected the anxiety, self efficacy and social support items together with the covariates, received a strongly positive label with compatibility 1.00. Its centroid was +21.1, its support ran from +12.8 to +31.3, and its sign confidence, disagreement index and selection membership were 1.00, 0.08 and 0.78. The second concept, which coincided with the rumination subscale (overlap 1.00), received the label negligible with compatibility 0.87, a centroid of -1.4, a support from -3.47 to +0.94, a sign confidence of 0.88 and a selection membership of 0.66.
 
@@ -137,16 +165,15 @@ On faithfulness, the deletion AUC was 0.346 (0.065) for PFCA against 0.207 (0.03
 
 The diagnostics of the front over the study are reported in [[tab:front]]. [FRONT_A] On the breast cancer dataset the front held 64.0 of 420 evaluated configurations with 12.8 distinct explanations, and on the questionnaire 82.0 of 445 with 16.4 distinct explanations; no run collapsed to a single explanation. The Spearman correlation between fidelity loss and complexity over the feasible configurations was -0.78 on the benchmark and -0.84 on the questionnaire, between fidelity loss and instability -0.41 and -0.55, and between complexity and instability +0.61 and +0.60.
 
-{{tab:front}}
+::table tab:front | Size of the Pareto front and conflict between the objectives
+Source | Group | n | front size | distinct explanations | fraction collapsed | corr(fidelity, complexity) | corr(fidelity, instability) | corr(complexity, instability)
+Phase A | additive | 11 | 55.45 | 11.09 | 0.00 | -0.70 | -0.11 | 0.50
+Phase A | all families | 11 | 55.45 | 11.09 | 0.00 | -0.70 | -0.11 | 0.50
+Note: Spearman correlations between the objectives over the feasible configurations; a negative value means that the two objectives conflict.
+::end
 
 ## 3.5. Sensitivity analysis
-[[tab:sensitivity]] reports the sensitivity analysis on the additive and the redundancy cell with 500 instances, 30 features and a within block correlation of 0.6, over two seeds, where the true structure has five factors. Under the default setting the utopia knee selected two concepts and retained 1.75 of them, with a recovery error of 1.154, a rank stability of 1.000, a support coverage of the truth of 0.436 and 17.25 distinct explanations on the front.
-
-Increasing the number of resamples from 10 to 20 and 50 left the recovery error unchanged (1.158, 1.154, 1.154) and raised the support coverage from 0.379 to 0.431 and 0.436, while the mean absolute difference between the quantile arrays at a given $B$ and at $B = 50$, relative to the typical attribution, fell from 0.136 at $B = 10$ to 0.080 at $B = 20$; the number of type 2 attributions fell from 12.5 to 8.75 and 6.5 of 200 and the explanation time rose from 8.5 to 13.7 s. With one, two and three model classes the recovery error was 1.096, 1.154 and 1.095, the support coverage 0.429, 0.436 and 0.468, and the number of type 2 attributions 0, 6.5 and 32.75, whereas the rank stability fell to 0.817 with the third class. The triangular shape reproduced every value of the trapezoidal one except the core coverage, which fell to zero because the core of a triangular number is a single point, and the percentile levels moved the support coverage from 0.355 (10th to 90th percentiles) to 0.436 (5th to 95th) and 0.512 (2.5th to 97.5th) with relative support widths of 1.20, 1.54 and 1.83.
-
-The loading distance gave a recovery error of 0.975 against 1.154 for the correlation distance, a rank stability of 0.706 against 1.000, a support coverage of 0.544 and 2.5 concepts on average. NSGA-II recovered 98.8 percent of the distinct members of the exhaustive front, reached a hypervolume ratio of 1.000 and selected the same knee explanation as the grid in every run, in 8.3 s against 13.7 s for the enumeration. The knee criterion changed the explanation more than any other factor: the hyperplane criterion selected 4.5 concepts and retained 3.0 with a recovery error of 0.642, a rank stability of 0.833 and a support coverage of 0.606, the sparsest member within 10 percent of the best fidelity loss selected 3.75 concepts and retained 3.5 with a recovery error of 0.718, and the member of median complexity selected 3.0 concepts and retained 2.0 with a recovery error of 1.000. The alternative label sets left every metric of the selection unchanged, as expected since the labels do not enter the objectives; the sign class of the chosen label agreed with the default set in 83.6 percent of the attributions for the narrow set, 87.5 percent for the wide set and 100 percent for the three label set, and the fraction of negligible labels was 0.334 under the default set, 0.170 under the narrow set and 0.459 under the wide set.
-
-{{tab:sensitivity}}
+[SENSITIVITY]
 
 ## 3.6. Success criteria
 [CRITERIA]

@@ -146,10 +146,29 @@ def phase_c_tables(results: Path, name: str, tab_dir: Path, blocks: list):
     rel = results / name / "reliability_summary.csv"
     if rel.exists():
         shutil.copy(rel, tab_dir / "phase_c_reliability_summary.csv")
+        r = pd.read_csv(rel, header=[0, 1], index_col=[0, 1, 2])
+        mean = r.xs("mean", axis=1, level=1)
+        rows = []
+        for construct in ["anxiety", "rumination", "self_efficacy", "social_support"]:
+            row = {"Construct": construct.replace("_", " ")}
+            try:
+                pf = mean.loc[("pfca", "concept", construct)]
+                row.update({"PFCA relative support width": fmt(pf["relative_support_width"]), "PFCA sign confidence": fmt(pf["mean_sign_confidence"]), "PFCA disagreement": fmt(pf["mean_disagreement"]), "PFCA fraction type 2": fmt(pf["fraction_type2"]), "PFCA overlap with subscale": fmt(pf["matched_overlap"])})
+            except KeyError:
+                pass
+            try:
+                bs = mean.loc[("bootstrapped_shap_by_subscale", "subscale", construct)]
+                row.update({"Bootstrapped SHAP relative support width": fmt(bs["relative_support_width"]), "Bootstrapped SHAP sign confidence": fmt(bs["mean_sign_confidence"])})
+            except KeyError:
+                pass
+            rows.append(row)
+        df = pd.DataFrame(rows)
+        df.to_csv(tab_dir / "phase_c_reliability.csv", index=False)
+        blocks.append(md_block("tab:reliability", "Reliability of the attribution per construct on the simulated questionnaire, mean over repetitions", df, "For PFCA every retained concept is matched to the subscale with which it shares most membership mass (overlap). The relative support width is the width of the 5th to 95th percentile interval divided by the absolute median attribution; for bootstrapped SHAP the feature level values of the items of a subscale are summed before the width is computed."))
 
 
 def sensitivity_table(dfs: pd.DataFrame, tab_dir: Path, blocks: list):
-    metrics = [("recovery_error", "recovery error"), ("rank_stability", "rank stability"), ("support_coverage_truth", "support coverage"), ("n_front_distinct", "distinct front size"), ("quantile_mad_to_largest_b", "quantile MAD to largest B"), ("front_recovery", "front recovery"), ("label_sign_agreement_with_default", "label sign agreement")]
+    metrics = [("recovery_error", "recovery error"), ("rank_stability", "rank stability"), ("support_coverage_truth", "support coverage"), ("n_front_distinct", "distinct front size"), ("quantile_mad_to_largest_b_rel", "relative quantile MAD to largest B"), ("front_recovery", "front recovery"), ("label_sign_agreement_with_default", "label sign agreement")]
     g = dfs.groupby(["factor", "setting"], sort=False)
     rows = []
     for (f, s), sub in g:
@@ -185,7 +204,7 @@ def main(argv=None):
     ap.add_argument("--out", default=str(HERE))
     args = ap.parse_args(argv)
     results = Path(args.results)
-    out = Path(args.out)
+    out = Path(args.out).resolve()
     gen = out / "generated"
     tab_dir, fig_dir = out / "tables", out / "figures"
     for d in (gen, tab_dir, fig_dir):

@@ -1,0 +1,5 @@
+Construct,PFCA relative support width,PFCA sign confidence,PFCA disagreement,PFCA fraction type 2,PFCA overlap with subscale,Bootstrapped SHAP relative support width,Bootstrapped SHAP sign confidence
+anxiety,1.278,0.903,0.110,0.013,0.554,0.825,0.931
+rumination,1.355,0.907,0.115,0.020,0.865,1.106,0.921
+self efficacy,2.067,0.869,0.146,0.055,0.357,1.417,0.905
+social support,1.945,0.887,0.190,0.040,0.413,2.550,0.790
