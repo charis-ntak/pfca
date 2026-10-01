@@ -62,7 +62,7 @@ from pfca.concepts import apriori_membership  # noqa: E402
 from pfca.evaluation import metrics as M  # noqa: E402
 from pfca.evaluation import protocol  # noqa: E402
 from pfca.evaluation.budget import measure  # noqa: E402
-from pfca.evaluation.datasets import Dataset, load_questionnaire, stratified_splits  # noqa: E402
+from pfca.evaluation.datasets import Dataset, load_questionnaire, make_splits, replicate_repetition  # noqa: E402
 from pfca.evaluation.statistics import summarize_by  # noqa: E402
 from pfca.fuzzification import fuzzify_array, sign_confidence, tfn_from_quantiles  # noqa: E402
 from pfca.plotting import GRID, MUTED, SEQUENTIAL, TEXT, plot_fuzzy_attribution, plot_linguistic_bars, plot_membership, plot_shap_bars  # noqa: E402
@@ -351,6 +351,8 @@ def run_repeat(ds: Dataset, split: tuple, next_train: np.ndarray | None, cfg: di
                 out = protocol.grouped_shap_output(engine, attr, X_explain, groups, task, background_size=cfg.get("grouped_background"), random_state=seed, n_retained=matched.get("concept"), trace_memory=trace)
             elif name == "integrated_gradients":
                 out = protocol.integrated_gradients_output(engine, X_explain, task)
+            elif name == "lime":
+                out = protocol.lime_output(engine, X_explain, task, feature_names=ds.feature_names, num_samples=int(cfg.get("lime_samples", 2000)), random_state=seed, n_retained=matched.get("feature"))
             else:
                 raise ValueError(f"unknown method {name}")
             outputs[name] = out
@@ -431,24 +433,30 @@ def main(argv=None):
     csv_path, spec_path = resolve_path(cfg["csv_path"]), resolve_path(cfg["spec_path"])
     if not csv_path.exists() or not spec_path.exists():
         raise SystemExit(f"Questionnaire files not found: {csv_path} / {spec_path}. The real dataset is not distributed; see data/README.md, or run experiments/make_demo_questionnaire.py for a simulated file.")
+    if "lime" in cfg["methods"] and not protocol.lime_available():
+        print("[phase C] skipping lime: the optional lime package is not installed (pip install lime)")
+        cfg["methods"] = [m for m in cfg["methods"] if m != "lime"]
     ds = load_questionnaire(str(csv_path), str(spec_path))
     out_dir = prepare_run(args.results, args.name, cfg)
     writer = ResultWriter(out_dir / "metrics.csv", ["repeat", "method"])
     per_instance_writer = PerInstanceWriter(out_dir / "per_instance.csv")
     rel_writer = ResultWriter(out_dir / "reliability.csv", RELIABILITY_KEYS)
     n_repeats = int(cfg["n_repeats"])
-    splits = list(stratified_splits(ds.y, ds.task, n_repeats=n_repeats, random_state=int(cfg.get("split_seed", 0))))
+    scheme, splits = make_splits(ds.y, ds.task, n_repeats=n_repeats, scheme=str(cfg.get("split_scheme", "auto")), small_sample_rows=int(cfg.get("small_sample_rows", 500)), random_state=int(cfg.get("split_seed", 0)))
     if args.max_repeats:
         splits = splits[: args.max_repeats]
     print(f"[phase C] dataset {ds.name}: {ds.X.shape[0]} rows, {ds.n_features} features, task {ds.task}, subscales {list(ds.groups.keys())}")
-    print(f"[phase C] {len(splits)} repetitions, base seed {cfg.get('seed', 0)}, split seed {cfg.get('split_seed', 0)}, results in {out_dir}")
+    print(f"[phase C] {len(splits)} repetitions, split scheme {scheme} ({'repeated five fold cross validation' if scheme == 'repeated_cv' else 'repeated 60/20/20 splits'}), base seed {cfg.get('seed', 0)}, split seed {cfg.get('split_seed', 0)}, results in {out_dir}")
     t0 = time.time()
     for i, split in enumerate(splits):
         r = split[0]
         if all(writer.is_done({"repeat": r, "method": m}) for m in cfg["methods"]):
             continue
         t = time.time()
-        next_train = splits[(i + 1) % len(splits)][1] if len(splits) > 1 else None  # a single repetition has no independent replicate
+        # replicate: the repetition whose training split shares the fewest explained instances with this one (none with a single repetition)
+        idx_explain = split[3][: min(int(cfg["n_explain"]), split[3].size)]
+        rep = replicate_repetition(splits, i, idx_explain)
+        next_train = splits[rep][1] if rep is not None else None
         rows, table = run_repeat(ds, split, next_train, cfg, out_dir)
         per_instance_writer.append_from_rows(rows, ["repeat"])
         writer.append(rows)

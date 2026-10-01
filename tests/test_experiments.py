@@ -45,7 +45,7 @@ PHASE_A_CONFIG = {
     "n_resamples": 2,
     "background_size": 20,
     "explainer": "auto",
-    "methods": ["pfca", "pfca_fixed", "shap", "grouped_shap"],
+    "methods": ["pfca", "pfca_fixed", "shap", "grouped_shap", "lime"],
     "pfca": {**PFCA_SMALL, "partition_source": "data", "fuzzy_shape": "trapezoidal", "disagreement_threshold": 0.5},
     "perturbation_instances": 2,
     "n_perturbations": 1,
@@ -68,7 +68,7 @@ PHASE_B_CONFIG = {
     "background_size": 20,
     "explainer": "auto",
     "tuning_grid": {"max_depth": [2], "n_estimators": [30]},
-    "methods": ["pfca", "shap", "bootstrapped_shap"],
+    "methods": ["pfca", "shap", "bootstrapped_shap", "lime"],
     "pfca": dict(PFCA_SMALL),
     "perturbation_instances": 2,
     "n_perturbations": 1,
@@ -92,6 +92,7 @@ PHASE_C_CONFIG = {
     "imputation": "conditional",
     "grouped_background": None,
     "example_instances": [0],
+    "split_scheme": "holdout",
     "seed": 0,
     "split_seed": 0,
     "n_jobs": 1,
@@ -143,6 +144,7 @@ SENSITIVITY_CONFIG = {
     "distances": ["correlation", "loading"],
     "solvers": ["grid", "nsga2"],
     "knee_methods": ["utopia", "hyperplane"],
+    "label_sets": [{"name": "default"}, {"name": "three_labels", "centers": [-1.0, 0.0, 1.0], "names": ["negative", "negligible", "positive"]}],
     "defaults": {
         "n_resamples": 100,
         "n_model_classes": 3,
@@ -162,7 +164,13 @@ SENSITIVITY_CONFIG = {
     "imputation": "conditional",
     "n_jobs": 1,
 }
-SENSITIVITY_FACTORS = ["resamples", "model_classes", "solver", "knee"]
+SENSITIVITY_FACTORS = ["resamples", "model_classes", "solver", "knee", "labels"]
+HAS_LIME = importlib.util.find_spec("lime") is not None
+
+
+def expected_methods(methods: list[str]) -> list[str]:
+    """Methods a script runs: LIME is skipped when the optional package is missing."""
+    return [m for m in methods if m != "lime" or HAS_LIME]
 
 
 def run_script(name: str, *args, expect_failure: bool = False) -> subprocess.CompletedProcess:
@@ -219,10 +227,16 @@ def test_phase_a_writes_the_metrics_of_every_method(phase_a_run):
     assert "[phase A] 1 cells" in phase_a_run["proc"].stdout  # --only-family and --max-cells restrict the design
     assert "[phase A] finished" in phase_a_run["proc"].stdout
     df = pd.read_csv(out / "metrics.csv")
-    assert df["method"].tolist() == PHASE_A_CONFIG["methods"]
+    assert df["method"].tolist() == expected_methods(PHASE_A_CONFIG["methods"])
+    if not HAS_LIME:
+        assert "skipping lime" in phase_a_run["proc"].stdout
     assert "error" not in df.columns and "duplication_error" not in df.columns
+    pf = df[df["method"] == "pfca"]
+    assert pf["n_front_distinct"].ge(1).all() and pf["n_feasible"].ge(pf["n_front"]).all()  # front diagnostics of Section 10
+    assert "objective_corr_fidelity_complexity" in df.columns
     assert (df["family"] == "redundancy").all() and df["n_features"].eq(6).all() and df["n_features_total"].gt(6).all()
-    assert np.isfinite(df["recovery_error"]).all() and np.isfinite(df["rank_stability"]).all()
+    assert np.isfinite(df["recovery_error"]).all()
+    assert np.isfinite(df.loc[df["method"] != "lime", "rank_stability"]).all()  # LIME has no resample pool, so its rank stability is undefined
     assert np.isfinite(df["duplication_change"]).all()  # the redundancy family reruns every method without the duplicates
     assert df.loc[df["method"] == "pfca", "n_front"].ge(1).all()
     assert df.loc[df["method"] == "pfca_fixed", "n_front"].eq(1).all()
@@ -231,7 +245,7 @@ def test_phase_a_writes_the_metrics_of_every_method(phase_a_run):
     assert {"instance", "metric", "value", "family", "n_samples", "n_features", "rho", "seed", "method"} <= set(per.columns)
     assert set(per["method"]) <= set(PHASE_A_CONFIG["methods"]) and per["instance"].max() < PHASE_A_CONFIG["n_explain"]
     frozen = read_yaml(out / "config.yaml")
-    assert frozen["methods"] == PHASE_A_CONFIG["methods"] and frozen["n_jobs"] == 1 and frozen["n_seeds"] == 1
+    assert frozen["methods"] == expected_methods(PHASE_A_CONFIG["methods"]) and frozen["n_jobs"] == 1 and frozen["n_seeds"] == 1
     env = read_json(out / "environment.json")
     assert {"versions", "started", "cwd", "argv", "seeds_from_config"} <= set(env)
     assert env["versions"]["pfca"] and "--only-family" in env["argv"]
@@ -259,19 +273,23 @@ def phase_b_run(work):
 def test_phase_b_runs_the_built_in_dataset_offline(phase_b_run):
     out = phase_b_run["dir"]
     assert "breast_cancer: 120 rows, 30 features, classification" in phase_b_run["proc"].stdout
+    assert "split scheme repeated_cv" in phase_b_run["proc"].stdout  # 120 rows are below the small sample threshold
+    methods = expected_methods(PHASE_B_CONFIG["methods"])
     df = pd.read_csv(out / "metrics.csv")
-    assert len(df) == 2 * len(PHASE_B_CONFIG["methods"]) and sorted(df["repeat"].unique()) == [0, 1]
-    assert set(df["method"]) == set(PHASE_B_CONFIG["methods"]) and (df["dataset"] == "breast_cancer").all()
+    assert len(df) == 2 * len(methods) and sorted(df["repeat"].unique()) == [0, 1]
+    assert set(df["method"]) == set(methods) and (df["dataset"] == "breast_cancer").all()
     assert "error" not in df.columns
     assert np.isfinite(df["deletion_auc"]).all() and np.isfinite(df["surrogate_r2"]).all()
-    pfca_rows = df[df["method"] == "pfca"]
-    assert np.isfinite(pfca_rows["support_coverage_replicate"]).all()  # the second repetition is the replicate
-    assert np.isfinite(pfca_rows["sign_confidence_ece"]).all()
+    pfca_rows = df[df["method"] == "pfca"].set_index("repeat")
+    assert np.isnan(pfca_rows.loc[0, "support_coverage_replicate"])  # no repetition holds the first explained fold out of training
+    assert np.isfinite(pfca_rows.loc[1, "support_coverage_replicate"]) and np.isfinite(pfca_rows.loc[1, "sign_confidence_ece"])
     runs = pd.read_csv(out / "runs.csv")
     assert len(runs) == 2 and (runs["n_train"] + runs["n_tune"] + runs["n_test"]).eq(120).all()
-    assert runs["seed"].nunique() == 2
+    assert runs["seed"].nunique() == 2 and (runs["split_scheme"] == "repeated_cv").all()
+    # with two cross validation repetitions only the second finds a repetition that holds its explained fold out of training
+    assert runs.set_index("repeat")["replicate_repeat"].tolist() == [1, 0] and runs.set_index("repeat").loc[1, "n_replicate_instances"] == 6
     summary = pd.read_csv(out / "summary.csv")
-    assert set(summary["method"]) == set(PHASE_B_CONFIG["methods"]) and summary["n_repeats"].eq(2).all()
+    assert set(summary["method"]) == set(methods) and summary["n_repeats"].eq(2).all()
     frozen = read_yaml(out / "config.yaml")
     assert frozen["n_repeats"] == 2 and frozen["datasets"] == ["breast_cancer"]  # --max-repeats caps the configuration
 
@@ -312,7 +330,7 @@ def phase_c_run(work, questionnaire):
 
 def test_phase_c_outputs(phase_c_run):
     out = phase_c_run["dir"]
-    assert "task regression" in phase_c_run["proc"].stdout and "2 repetitions" in phase_c_run["proc"].stdout
+    assert "task regression" in phase_c_run["proc"].stdout and "2 repetitions, split scheme holdout" in phase_c_run["proc"].stdout
     df = pd.read_csv(out / "metrics.csv")
     assert len(df) == 2 * len(PHASE_C_CONFIG["methods"]) and sorted(df["repeat"].unique()) == [0, 1]
     assert set(df["method"]) == set(PHASE_C_CONFIG["methods"]) and "error" not in df.columns
@@ -440,17 +458,22 @@ def sensitivity_run(work):
 
 def test_sensitivity_outputs(sensitivity_run):
     out = sensitivity_run["dir"]
-    assert "1 cells x 1 seeds x 8 settings" in sensitivity_run["proc"].stdout
+    assert "1 cells x 1 seeds x 10 settings" in sensitivity_run["proc"].stdout
     df = pd.read_csv(out / "metrics.csv")
     assert df["factor"].tolist() == [f for f in SENSITIVITY_FACTORS for _ in range(2)]
-    assert df["setting"].tolist() == ["B2", "B3", "M1", "M2", "grid", "nsga2", "utopia", "hyperplane"]
+    assert df["setting"].tolist() == ["B2", "B3", "M1", "M2", "grid", "nsga2", "utopia", "hyperplane", "default", "three_labels"]
+    labels = df[df["factor"] == "labels"].set_index("setting")
+    assert labels.loc["default", "label_agreement_with_default"] == 1.0 and labels.loc["default", "n_labels"] == 5
+    assert labels.loc["three_labels", "n_labels"] == 3 and np.isnan(labels.loc["three_labels", "label_agreement_with_default"])
+    assert np.isfinite(df["label_sign_agreement_with_default"]).all() and df["label_entropy"].between(0, 1).all()
+    assert labels.loc["default", "recovery_error"] == labels.loc["three_labels", "recovery_error"]  # the selection does not depend on the labels
     assert "error" not in df.columns
     assert np.isfinite(df["recovery_error"]).all() and np.isfinite(df["rank_stability"]).all()
     assert np.isfinite(df.loc[df["setting"] == "nsga2", "front_recovery"]).all()  # the front comparison exists on the NSGA II row only
     assert df.loc[df["setting"] != "nsga2", "front_recovery"].isna().all()
     assert np.isfinite(df.loc[df["setting"] == "B2", "quantile_mad_to_largest_b"]).all()
     summary = pd.read_csv(out / "summary.csv")
-    assert len(summary) == 8 and summary["n_seeds"].eq(1).all()
+    assert len(summary) == 10 and summary["n_seeds"].eq(1).all()
     runs = pd.read_csv(out / "runs.csv")
     assert len(runs) == 1
     frozen = read_yaml(out / "config.yaml")
@@ -499,9 +522,9 @@ def figures_run(work, phase_a_run, phase_b_run, phase_c_run, sensitivity_run, ex
 def test_make_figures_writes_every_item(figures_run):
     out = figures_run["out"]
     items = pd.read_csv(figures_run["dir"] / "items.csv")
-    assert len(items) == 11
+    assert len(items) == 14
     assert items["status"].eq("written").all(), items.loc[items["status"] != "written", ["item", "title", "detail"]].to_string()
-    assert "11 of 11 items written" in figures_run["proc"].stdout
+    assert "14 of 14 items written" in figures_run["proc"].stdout
     for name in [
         "pipeline_schematic.png",
         "pipeline_schematic.pdf",
@@ -528,7 +551,19 @@ def test_make_figures_writes_every_item(figures_run):
         "interval_coverage.csv",
         "runtime_memory.csv",
         "sensitivity_summary.csv",
+        "phase_a_mixed_models.csv",
+        "phase_a_mixed_models.md",
+        "success_criteria.csv",
+        "success_criteria.md",
+        "pareto_front_diagnostics.csv",
+        "pareto_front_diagnostics.md",
     ]:
         assert (out / "tables" / name).stat().st_size > 0, name
     properties = pd.read_csv(out / "tables" / "properties.csv")
     assert len(properties) >= 6
+    mixed = pd.read_csv(out / "tables" / "phase_a_mixed_models.csv")
+    assert (mixed["model"] == "ordinary least squares (single seed, no random effect)").all()  # the tiny run has one seed
+    criteria = pd.read_csv(out / "tables" / "success_criteria.csv")
+    assert sorted(criteria["criterion"].unique()) == [1, 2, 3] and criteria["status"].isin(["met", "not met"]).any()
+    front = pd.read_csv(out / "tables" / "pareto_front_diagnostics.csv")
+    assert "all families" in set(front["group"]) and {"grid", "nsga2"} <= set(front["group"])

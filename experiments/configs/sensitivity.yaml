@@ -23,6 +23,11 @@ percentiles:
 distances: [correlation, loading]
 solvers: [grid, nsga2]
 knee_methods: [utopia, hyperplane, sparsest_within_10pct, median_complexity]
+label_sets:                     # labels factor (Section 10): alternative linguistic label sets given by the centers of their labels on the standardized axis
+  - {name: default}
+  - {name: narrow, centers: [-1.0, -0.5, 0.0, 0.5, 1.0], names: [strongly negative, weakly negative, negligible, weakly positive, strongly positive]}
+  - {name: wide, centers: [-3.0, -1.5, 0.0, 1.5, 3.0], names: [strongly negative, weakly negative, negligible, weakly positive, strongly positive]}
+  - {name: three_labels, centers: [-1.0, 0.0, 1.0], names: [negative, negligible, positive]}
 defaults:
   n_resamples: 100
   n_model_classes: 3
@@ -40,6 +45,7 @@ pfca:
   fuzzifier_grid: [1.5, 2.0, 2.5]
   alpha_grid: [0.0, 0.25, 0.5, 0.75, 1.0]
   disagreement_threshold: 0.5
+  consensus: true               # consensus clustering over resamples of the instances (Section 10 of the guide)
 perturbation_instances: 0       # perturbation stability is not a sensitivity metric; set above zero to compute it
 n_perturbations: 0
 imputation: conditional

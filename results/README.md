@@ -17,7 +17,7 @@ The experiment scripts under `experiments/` write their outputs here, one folder
 | Run | Script | Unit of `metrics.csv` | Other files |
 |---|---|---|---|
 | `phase_a` | `run_phase_a.py` | family, sample size, dimension, correlation, seed, method | duplication change of the redundancy family is a column of `metrics.csv` |
-| `phase_b` | `run_phase_b.py` | dataset, repetition, method | `runs.csv` (seeds, split sizes, tuned reference parameters, test performance, explained indices), `summary.csv` |
+| `phase_b` | `run_phase_b.py` | dataset, repetition, method | `runs.csv` (seeds, split scheme and sizes, replicate repetition, tuned reference parameters, test performance, explained indices), `summary.csv` |
 | `phase_c` | `run_phase_c.py` | repetition, method | `summary_by_method.csv`, `reliability*.csv`, `pfca_explanation_repeatRR.json`, `membership_repeatRR.png`, `overlap_repeatRR.png`, `example_repeatRR_instanceII.txt` and `.png` |
 | `phase_d` | `run_phase_d.py generate` | not applicable | `materials/` (figures and text shown to the experts, response sheets), `response_sheet.csv`, `private/` (format mapping, answer key, seeds, explanation) |
 | `phase_d/analysis` | `run_phase_d.py analyze` | expert, prediction, format | descriptive statistics, Friedman and Nemenyi, Wilcoxon with Holm correction, ordinal and binomial mixed models, `summary.txt`; a simulated analysis is written to `analysis_simulated/` |

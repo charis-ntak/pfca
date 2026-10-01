@@ -25,7 +25,7 @@ import pandas as pd
 
 from pfca.attribution import AttributionEngine, AttributionResult, aggregate_to_concepts, output_function, shapley_values
 from pfca.evaluation import metrics as M
-from pfca.evaluation.baselines import grouped_shapley, integrated_gradients
+from pfca.evaluation.baselines import grouped_shapley, integrated_gradients, lime_attribution
 from pfca.evaluation.budget import measure
 from pfca.explainer import PFCAExplainer
 from pfca.fuzzification import centroid_array, fuzzify_array, sign_confidence
@@ -232,8 +232,43 @@ def pfca_output(name: str, engine: AttributionEngine, attr: AttributionResult, f
             "partition": expl.configuration.partition,
             "n_type2": int(expl.type2_mask.sum()),
             "fpc": expl.partition.partition_coefficient,
+            **objective_conflict(expl.selection),
         },
     )
+
+
+def objective_conflict(sel) -> dict:
+    """Diagnostics of the Pareto front for the collapse risk of Section 10 of the guide.
+
+    The guide asks to verify that the three objectives of Equation 4 conflict
+    and to report the case in which the front collapses to one solution.
+    Returns the number of feasible evaluated configurations, the number of
+    distinct Pareto optimal explanations (one representative per partition and
+    retained set, see ``SelectionResult.representative``), whether the front
+    collapsed to a single distinct explanation, and the Spearman correlation
+    between every pair of objectives over the feasible configurations; a
+    negative correlation means that the two objectives conflict, and the
+    correlation is missing when an objective is constant.
+    """
+    from scipy import stats
+
+    F = np.asarray(sel.objectives, dtype=float)
+    feasible = np.all(np.isfinite(F), axis=1)
+    pareto = np.asarray(sel.pareto, dtype=bool)
+    rep = getattr(sel, "representative", None)
+    distinct = int((pareto & np.asarray(rep, dtype=bool)).sum()) if rep is not None else int(pareto.sum())
+    names = ("fidelity", "complexity", "instability")
+    out = {"n_feasible": int(feasible.sum()), "n_front_distinct": distinct, "front_collapsed": bool(distinct <= 1)}
+    Ff = F[feasible]
+    for i in range(3):
+        for j in range(i + 1, 3):
+            key = f"objective_corr_{names[i]}_{names[j]}"
+            if Ff.shape[0] < 3 or np.ptp(Ff[:, i]) < 1e-12 or np.ptp(Ff[:, j]) < 1e-12:
+                out[key] = float("nan")
+            else:
+                with np.errstate(invalid="ignore"):
+                    out[key] = float(stats.spearmanr(Ff[:, i], Ff[:, j]).correlation)
+    return out
 
 
 def _pool_target_class(engine: AttributionEngine):
@@ -376,6 +411,45 @@ def integrated_gradients_output(engine: AttributionEngine, X_explain: np.ndarray
         peak_mb=b.peak_python_mb,
         attribution_fn=lambda Xp: integrated_gradients(g, Xp, baseline),
         extra={"model_class": names[model_index]},
+    )
+
+
+def lime_available() -> bool:
+    """True when the optional lime package is installed (Section 7.1 lists LIME where applicable)."""
+    import importlib.util
+
+    return importlib.util.find_spec("lime") is not None
+
+
+def lime_output(engine: AttributionEngine, X_explain: np.ndarray, task: str, feature_names=None, num_samples: int = 2000, random_state: int = 0, n_retained: int | None = None, trace_memory: bool = False) -> MethodOutput:
+    """LIME feature weights of the reference model (optional lime package, Section 7.1).
+
+    The tabular explainer is fitted on the training data of the pool with
+    ``num_samples`` perturbations per instance and the given seed; the weights
+    of the local linear model are the attribution. ``n_retained`` restricts the
+    surrogate fidelity to the most important features (matched sparsity);
+    ``peak_mb`` is filled only with ``trace_memory``. Raises ImportError when
+    lime is not installed; use :func:`lime_available` to skip the method.
+    """
+    model = engine.reference_model_
+    X_train = engine.X_train_
+    names = list(feature_names) if feature_names is not None else None
+    with measure(trace_memory=trace_memory) as b:
+        point = lime_attribution(model, X_train, X_explain, task, num_samples=num_samples, random_state=random_state, feature_names=names)
+    d = X_explain.shape[1]
+    importance = np.abs(point).mean(axis=0)
+    return MethodOutput(
+        "lime",
+        "feature",
+        np.eye(d),
+        point,
+        importance,
+        _order_from_point(point),
+        wall_seconds=b.wall_seconds,
+        peak_mb=b.peak_python_mb,
+        attribution_fn=lambda Xp: lime_attribution(model, X_train, Xp, task, num_samples=num_samples, random_state=random_state, feature_names=names),
+        extra={"num_samples": int(num_samples)},
+        retained=_top_items(importance, n_retained),
     )
 
 
