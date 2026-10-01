@@ -1,0 +1,48 @@
+# Reduced scale sensitivity analysis used for the manuscript draft: two cells, three seeds, B in {10, 20, 50},
+# up to three model classes (gradient boosting, random forest, ridge) and every factor of Section 7.5.
+cells:
+  - {family: additive, n_samples: 500, n_features: 30, rho: 0.6}
+  - {family: redundancy, n_samples: 500, n_features: 30, rho: 0.6}
+n_seeds: 3
+n_explain: 100
+tune_fraction: 0.34
+model_classes: [gbm, rf, ridge]
+background_size: 100
+explainer: auto
+resamples: [10, 20, 50]
+model_class_counts: [1, 2, 3]
+shapes: [trapezoidal, triangular]
+percentiles:
+  - {support: [5, 95], core: [25, 75]}
+  - {support: [2.5, 97.5], core: [25, 75]}
+  - {support: [10, 90], core: [30, 70]}
+distances: [correlation, loading]
+solvers: [grid, nsga2]
+knee_methods: [utopia, hyperplane, sparsest_within_10pct, median_complexity]
+label_sets:
+  - {name: default}
+  - {name: narrow, centers: [-1.0, -0.5, 0.0, 0.5, 1.0], names: [strongly negative, weakly negative, negligible, weakly positive, strongly positive]}
+  - {name: wide, centers: [-3.0, -1.5, 0.0, 1.5, 3.0], names: [strongly negative, weakly negative, negligible, weakly positive, strongly positive]}
+  - {name: three_labels, centers: [-1.0, 0.0, 1.0], names: [negative, negligible, positive]}
+defaults:
+  n_resamples: 50
+  n_model_classes: 2
+  fuzzy_shape: trapezoidal
+  support_percentiles: [5, 95]
+  core_percentiles: [25, 75]
+  concept_distance: correlation
+  solver: grid
+  knee_method: utopia
+nsga_pop_size: 40
+nsga_generations: 30
+include_apriori: false
+pfca:
+  n_concepts_grid: [2, 3, 4, 5, 6, 8]
+  fuzzifier_grid: [1.5, 2.0, 2.5]
+  alpha_grid: [0.0, 0.25, 0.5, 0.75, 1.0]
+  disagreement_threshold: 0.5
+  consensus: true
+perturbation_instances: 0
+n_perturbations: 0
+imputation: conditional
+n_jobs: 2

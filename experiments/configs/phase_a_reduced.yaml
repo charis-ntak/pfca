@@ -1,0 +1,32 @@
+# Reduced scale Phase A used for the manuscript draft: the full design of Section 6.1 (phase_a.yaml) is crossed
+# over two sample sizes, two dimensions, three correlations and three seeds, with B = 20 resamples and two model
+# classes, so that the whole phase runs in hours on a workstation. Replace by phase_a.yaml for the full study.
+families: [additive, interaction, redundancy]
+n_samples: [200, 500]
+n_features: [10, 30]
+rhos: [0.3, 0.6, 0.9]
+n_seeds: 3
+n_explain: 100
+tune_fraction: 0.34
+model_classes: [gbm, rf]
+n_resamples: 20
+background_size: 100
+explainer: auto
+methods: [pfca, pfca_crisp, pfca_single_model, pfca_fixed, pfca_apriori, shap, bootstrapped_shap, grouped_shap, lime]
+lime_samples: 1000
+pfca:
+  n_concepts_grid: [2, 3, 4, 5, 6, 8]
+  fuzzifier_grid: [1.5, 2.0, 2.5]
+  alpha_grid: [0.0, 0.25, 0.5, 0.75, 1.0]
+  partition_source: data
+  solver: grid
+  knee_method: utopia
+  fuzzy_shape: trapezoidal
+  disagreement_threshold: 0.5
+  consensus: true
+perturbation_instances: 10
+n_perturbations: 2
+imputation: conditional
+grouped_background: null
+trace_memory: false
+n_jobs: 2
