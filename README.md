@@ -108,7 +108,7 @@ The package uses a src layout and is organized in the five modules named in Sect
 | `src/pfca/evaluation/datasets.py` | Benchmark loaders of Phase B (OpenML by name and version, built in scikit-learn datasets offline), questionnaire loader of Phase C, repeated 60/20/20 splits |
 | `src/pfca/evaluation/budget.py` | Wall clock time and peak memory measurement |
 | `experiments/` | `common.py` (configuration, environment logging, resumable result files, reference model tuning), the phase scripts, `make_demo_questionnaire.py`, `example_front.py`, `make_figures.py` and the YAML configurations under `configs/` |
-| `tests/` | Unit tests of every module and the numerical checks of the properties of Section 5 |
+| `tests/` | Unit tests of every module, the numerical checks of the properties of Section 5, and end to end runs of the experiment scripts on tiny configurations |
 | `docs/` | The study design guide, its Markdown conversion and the implementation notes |
 | `data/`, `results/`, `figures/`, `tables/` | Inputs of Phase C and outputs of the scripts; contents other than the README files are not versioned |
 
@@ -209,7 +209,7 @@ Failure on any criterion is reported rather than concealed.
 python3 -m pytest
 ```
 
-The suite covers every module and contains numerical checks of the six properties of Section 5 of the guide (`tests/test_properties.py`, with supporting tests in `tests/test_selection.py` and `tests/test_fuzzification.py`); the mapping from property to test is given in `docs/implementation_notes.md`. The tests run offline in well under a minute.
+The suite covers every module and contains numerical checks of the six properties of Section 5 of the guide (`tests/test_properties.py`, with supporting tests in `tests/test_selection.py` and `tests/test_fuzzification.py`); the mapping from property to test is given in `docs/implementation_notes.md`. The unit tests run offline in well under a minute. `tests/test_experiments.py` additionally runs every script under `experiments/` end to end on tiny configurations through its command line interface (Phases A to D, the sensitivity analysis, the example front and the figures), which takes about one more minute; these tests carry the marker `slow` and are skipped with `python3 -m pytest -m "not slow"`.
 
 ## Citation
 

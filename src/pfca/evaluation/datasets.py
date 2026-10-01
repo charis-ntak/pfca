@@ -69,7 +69,8 @@ def benchmark_spec(name: str) -> dict | None:
 def _prepare_frame(X: pd.DataFrame, y: pd.Series, task: str, max_rows: int | None, random_state: int) -> tuple[np.ndarray, np.ndarray, list[str]]:
     X = X.copy()
     for c in X.columns:
-        if X[c].dtype.name in ("category", "object", "bool"):
+        # categorical, string (object or the pandas 3 string dtype) and boolean columns are integer coded
+        if not pd.api.types.is_numeric_dtype(X[c]) or pd.api.types.is_bool_dtype(X[c]):
             X[c] = pd.factorize(X[c])[0].astype(float)
     X = X.astype(float)
     X = X.loc[:, X.std(axis=0) > 0]
@@ -148,7 +149,7 @@ def load_benchmark(
         bunch = fetch_openml(name=name, version=version, as_frame=True, parser="auto", data_home=data_home)
         data, target = bunch.data, bunch.target
         if task is None:
-            task = "classification" if target.dtype.name in ("category", "object") else "regression"
+            task = "regression" if pd.api.types.is_numeric_dtype(target) and not pd.api.types.is_bool_dtype(target) else "classification"
         meta = {"openml_id": bunch.details.get("id") if hasattr(bunch, "details") else None, "version": version}
     else:
         raise ValueError("source must be 'openml' or 'sklearn'")

@@ -45,4 +45,5 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = ["slow: end to end runs of the experiment scripts on tiny configurations (deselect with -m 'not slow')"]
 filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning", "ignore::UserWarning"]
