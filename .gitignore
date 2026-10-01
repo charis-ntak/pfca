@@ -19,3 +19,7 @@ data/*
 .venv/
 venv/
 .DS_Store
+
+# Manuscript drafts are kept locally and never versioned
+paper/
+*.docx

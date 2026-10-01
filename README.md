@@ -213,7 +213,7 @@ The suite covers every module and contains numerical checks of the six propertie
 
 ## Manuscript
 
-The directory `paper/` holds the manuscript of the reduced scale study: `paper.md` is the source, `refs.bib` the verified bibliography, `build_results.py` turns the result files of the reduced runs (`experiments/configs/*_reduced.yaml`, run folders `results/phase_a_reduced*`, `phase_b_reduced`, `phase_c_reduced`, `sensitivity_reduced` and `example_front`) into the tables and figures of the manuscript, `merge_phase_a.py` merges the per family Phase A folders, and `assemble.py` inserts the generated tables into the source. `PFCA_manuscript.docx` is the built document. The reduced runs use two seeds, 20 resamples and two model classes, the breast cancer dataset for Phase B and the simulated questionnaire for Phase C; the full study configurations are the files without the `_reduced` suffix.
+The manuscript drafts are not versioned. The directory `paper/` is ignored by git, together with every `.docx` file, and is kept in the local working copy of the author. It holds the manuscript source, the verified bibliography, the scripts which turn the result files of the reduced runs (`experiments/configs/*_reduced.yaml`) into the tables and figures of the manuscript, and the built document. The reduced runs use two seeds, 20 resamples and two model classes, the breast cancer dataset for Phase B and the simulated questionnaire for Phase C; the full study configurations are the files without the `_reduced` suffix.
 
 ## Citation
 
