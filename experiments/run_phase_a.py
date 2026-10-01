@@ -89,6 +89,8 @@ def run_cell(cell: dict, cfg: dict) -> tuple[list[dict], dict]:
                 out = protocol.grouped_shap_output(engine, attr, X_explain, groups, task, background_size=cfg.get("grouped_background"), random_state=seed, n_retained=matched.get("concept"), trace_memory=trace)
             elif name == "integrated_gradients":
                 out = protocol.integrated_gradients_output(engine, X_explain, task, trace_memory=trace)
+            elif name == "lime":
+                out = protocol.lime_output(engine, X_explain, task, feature_names=problem.feature_names, num_samples=int(cfg.get("lime_samples", 2000)), random_state=seed, n_retained=matched.get("feature"), trace_memory=trace)
             else:
                 raise ValueError(f"unknown method {name}")
             outputs[name] = out
@@ -122,6 +124,10 @@ def run_cell(cell: dict, cfg: dict) -> tuple[list[dict], dict]:
                     before = protocol.bootstrapped_shap_output(base_engine, base_attr)
                 elif name == "grouped_shap":
                     before = protocol.grouped_shap_output(base_engine, base_attr, X_explain[:, keep], base_groups, task, background_size=cfg.get("grouped_background"), random_state=seed)
+                elif name == "integrated_gradients":
+                    before = protocol.integrated_gradients_output(base_engine, X_explain[:, keep], task)
+                elif name == "lime":
+                    before = protocol.lime_output(base_engine, X_explain[:, keep], task, feature_names=[problem.feature_names[j] for j in keep], num_samples=int(cfg.get("lime_samples", 2000)), random_state=seed)
                 else:
                     continue
                 change = protocol.duplication_change(before, out, src, pos, problem.true_membership)
@@ -147,6 +153,9 @@ def main(argv=None):
     ap.add_argument("--max-cells", type=int, default=None, help="stop after this many cells (for testing)")
     args = ap.parse_args(argv)
     cfg = load_config(args.config, {"n_jobs": args.n_jobs, "n_seeds": args.seeds})
+    if "lime" in cfg["methods"] and not protocol.lime_available():
+        print("[phase A] skipping lime: the optional lime package is not installed (pip install lime)")
+        cfg["methods"] = [m for m in cfg["methods"] if m != "lime"]
     out_dir = prepare_run(args.results, args.name, cfg)
     writer = ResultWriter(out_dir / "metrics.csv", ["family", "n_samples", "n_features", "rho", "seed", "method"])
     per_instance_writer = PerInstanceWriter(out_dir / "per_instance.csv")

@@ -4,12 +4,15 @@
 csv_path: data/raw/questionnaire.csv
 spec_path: data/raw/questionnaire_spec.json
 n_repeats: 10
+split_scheme: auto        # holdout (repeated 60/20/20 splits), repeated_cv (five folds: test, tuning, rest) or auto (repeated_cv below small_sample_rows rows, Section 7.3)
+small_sample_rows: 500
 n_explain: 200
 model_classes: [gbm, rf, mlp]
 n_resamples: 100
 background_size: 100
 explainer: auto
-methods: [pfca, pfca_apriori, pfca_crisp, pfca_single_model, shap, bootstrapped_shap, grouped_shap]
+methods: [pfca, pfca_apriori, pfca_crisp, pfca_single_model, shap, bootstrapped_shap, grouped_shap, integrated_gradients, lime]
+lime_samples: 2000        # perturbations per instance of the LIME baseline (skipped when the optional lime package is missing)
 pfca:
   n_concepts_grid: [2, 3, 4, 5, 6, 8]
   fuzzifier_grid: [1.5, 2.0, 2.5]
@@ -17,6 +20,7 @@ pfca:
   partition_source: both   # the a priori subscales are domain knowledge and enter as a candidate partition (Section 3.2)
   solver: grid
   knee_method: utopia
+  consensus: true         # consensus clustering over resamples of the instances (Section 10 of the guide)
 perturbation_instances: 20
 n_perturbations: 3
 imputation: conditional

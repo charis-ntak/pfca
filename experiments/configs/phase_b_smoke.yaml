@@ -13,7 +13,7 @@ explainer: auto
 tuning_grid:
   max_depth: [2]
   n_estimators: [50]
-methods: [pfca, pfca_crisp, pfca_single_model, pfca_fixed, shap, bootstrapped_shap]
+methods: [pfca, pfca_crisp, pfca_single_model, pfca_fixed, shap, bootstrapped_shap, lime]   # lime is skipped when the optional package is missing
 pfca:
   n_concepts_grid: [2, 3, 4]
   fuzzifier_grid: [2.0]

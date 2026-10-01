@@ -1,0 +1,30 @@
+# Reduced scale Phase C used for the manuscript draft on the simulated questionnaire of make_demo_questionnaire.py
+# (600 participants, four constructs of five items); five repetitions, B = 20 and two model classes.
+csv_path: data/demo_questionnaire.csv
+spec_path: data/demo_questionnaire_spec.json
+n_repeats: 5
+split_scheme: auto
+small_sample_rows: 500
+n_explain: 100
+model_classes: [gbm, rf]
+n_resamples: 20
+background_size: 100
+explainer: auto
+methods: [pfca, pfca_apriori, pfca_crisp, pfca_single_model, shap, bootstrapped_shap, grouped_shap, lime]
+lime_samples: 1000
+pfca:
+  n_concepts_grid: [2, 3, 4, 5, 6, 8]
+  fuzzifier_grid: [1.5, 2.0, 2.5]
+  alpha_grid: [0.0, 0.25, 0.5, 0.75, 1.0]
+  partition_source: both
+  solver: grid
+  knee_method: utopia
+  consensus: true
+perturbation_instances: 10
+n_perturbations: 2
+imputation: conditional
+grouped_background: null
+example_instances: [0, 1, 2]
+seed: 0
+split_seed: 0
+n_jobs: 2

@@ -69,7 +69,8 @@ def benchmark_spec(name: str) -> dict | None:
 def _prepare_frame(X: pd.DataFrame, y: pd.Series, task: str, max_rows: int | None, random_state: int) -> tuple[np.ndarray, np.ndarray, list[str]]:
     X = X.copy()
     for c in X.columns:
-        if X[c].dtype.name in ("category", "object", "bool"):
+        # categorical, string (object or the pandas 3 string dtype) and boolean columns are integer coded
+        if not pd.api.types.is_numeric_dtype(X[c]) or pd.api.types.is_bool_dtype(X[c]):
             X[c] = pd.factorize(X[c])[0].astype(float)
     X = X.astype(float)
     X = X.loc[:, X.std(axis=0) > 0]
@@ -148,7 +149,7 @@ def load_benchmark(
         bunch = fetch_openml(name=name, version=version, as_frame=True, parser="auto", data_home=data_home)
         data, target = bunch.data, bunch.target
         if task is None:
-            task = "classification" if target.dtype.name in ("category", "object") else "regression"
+            task = "regression" if pd.api.types.is_numeric_dtype(target) and not pd.api.types.is_bool_dtype(target) else "classification"
         meta = {"openml_id": bunch.details.get("id") if hasattr(bunch, "details") else None, "version": version}
     else:
         raise ValueError("source must be 'openml' or 'sklearn'")
@@ -219,3 +220,84 @@ def stratified_splits(y: np.ndarray, task: str, n_repeats: int = 10, proportions
         strat_rest = y[idx_rest] if task == "classification" else None
         idx_tune, idx_test = train_test_split(idx_rest, train_size=rest_frac, random_state=seed, stratify=strat_rest)
         yield r, idx_train, idx_tune, idx_test
+
+
+def repeated_cv_splits(y: np.ndarray, task: str, n_repeats: int = 10, n_folds: int = 5, random_state: int = 0):
+    """Repeated k fold splits for small samples (Section 7.3).
+
+    Repetition r uses shuffle r // n_folds of the rows into n_folds folds
+    (stratified for classification) and takes fold r mod n_folds as the test
+    set, the next fold as the tuning set and the remaining folds as the
+    training set; with five folds the proportions are the 60, 20 and 20 of the
+    guide, every row is tested once per shuffle, and n_repeats of 10 is two
+    shuffles. Yields (r, train, tune, test) index arrays like
+    :func:`stratified_splits`.
+    """
+    from sklearn.model_selection import KFold, StratifiedKFold
+
+    y = np.asarray(y)
+    n = len(y)
+    if n_folds < 3:
+        raise ValueError("n_folds must be at least 3 (test, tuning and training folds).")
+    folds_by_shuffle: dict[int, list[np.ndarray]] = {}
+    for r in range(n_repeats):
+        shuffle, fold = r // n_folds, r % n_folds
+        if shuffle not in folds_by_shuffle:
+            seed = random_state + shuffle
+            if task == "classification":
+                splitter = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+                folds = [te for _, te in splitter.split(np.zeros((n, 1)), y)]
+            else:
+                splitter = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+                folds = [te for _, te in splitter.split(np.zeros((n, 1)))]
+            folds_by_shuffle[shuffle] = folds
+        folds = folds_by_shuffle[shuffle]
+        test = folds[fold]
+        tune = folds[(fold + 1) % n_folds]
+        train = np.concatenate([f for i, f in enumerate(folds) if i not in (fold, (fold + 1) % n_folds)])
+        yield r, np.sort(train), np.sort(tune), np.sort(test)
+
+
+def make_splits(y: np.ndarray, task: str, n_repeats: int = 10, scheme: str = "auto", small_sample_rows: int = 500, random_state: int = 0, n_folds: int = 5) -> tuple[str, list]:
+    """Repeated splits of Section 7.3 under the chosen scheme.
+
+    ``scheme`` is 'holdout' (repeated 60/20/20 splits, :func:`stratified_splits`),
+    'repeated_cv' (:func:`repeated_cv_splits`) or 'auto', which uses repeated
+    cross validation when the sample has fewer than ``small_sample_rows`` rows
+    and holdout splits otherwise. Returns the scheme used and the list of
+    (r, train, tune, test) tuples.
+    """
+    if scheme not in ("auto", "holdout", "repeated_cv"):
+        raise ValueError("scheme must be 'auto', 'holdout' or 'repeated_cv'")
+    used = scheme
+    if scheme == "auto":
+        used = "repeated_cv" if len(y) < int(small_sample_rows) else "holdout"
+    if used == "repeated_cv":
+        splits = list(repeated_cv_splits(y, task, n_repeats=n_repeats, n_folds=n_folds, random_state=random_state))
+    else:
+        splits = list(stratified_splits(y, task, n_repeats=n_repeats, random_state=random_state))
+    return used, splits
+
+
+def replicate_repetition(splits: list, r: int, explain_idx: np.ndarray) -> int | None:
+    """Position of the repetition that serves as replicate of repetition r for the calibration metrics.
+
+    The replicate attribution is computed from a model refitted on the
+    training split of another repetition, on the explained instances of
+    repetition r that lie outside that split. The repetition whose training
+    split shares the fewest explained instances is chosen, ties going to the
+    next repetition in cyclic order; with repeated cross validation this is a
+    repetition that holds the explained fold out of training entirely. Returns
+    None when there is a single repetition.
+    """
+    n = len(splits)
+    if n < 2:
+        return None
+    explain_idx = np.asarray(explain_idx)
+    best, best_key = None, None
+    for step in range(1, n):
+        j = (r + step) % n
+        overlap = int(np.isin(explain_idx, splits[j][1]).sum())
+        if best_key is None or overlap < best_key:
+            best, best_key = j, overlap
+    return best

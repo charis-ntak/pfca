@@ -31,6 +31,15 @@ Items of Table 2
  9  sensitivity analysis summary                    tables/sensitivity_summary.csv, tables/sensitivity_summary.md
 10  Phase C figure, produced by run_phase_c.py      figures/phase_c_example_linguistic_bars.png, figures/phase_c_subscale_overlap.png (copied)
 
+Items beyond Table 2 that the guide requires elsewhere
+11  linear mixed models of the Phase A metrics with method, sample size,
+    dimension and correlation as fixed effects and the seed as random
+    intercept, per family (Section 7.4)             tables/phase_a_mixed_models.csv, tables/phase_a_mixed_models.md
+12  the pre registered success criteria of Section 7.6 evaluated against
+    feature level SHAP, every failure reported     tables/success_criteria.csv, tables/success_criteria.md
+13  Pareto front diagnostics: size of the front, collapse to one solution
+    and conflict between the objectives (Section 10) tables/pareto_front_diagnostics.csv, tables/pareto_front_diagnostics.md
+
 The list of produced and skipped items is written to <results>/<run name>/items.csv
 next to the frozen configuration and environment.
 
@@ -63,13 +72,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import ResultWriter, prepare_run  # noqa: E402
 
 from pfca import plotting  # noqa: E402
-from pfca.evaluation.statistics import friedman_nemenyi, summarize_by, wilcoxon_holm  # noqa: E402
+from pfca.evaluation.statistics import friedman_nemenyi, mixed_model, paired_effect_sizes, summarize_by, wilcoxon_holm  # noqa: E402
 from pfca.plotting import GRID, MUTED, PALETTE, TEXT, plot_reliability, style_axes  # noqa: E402
 
 plt = plotting._plt()
 
 # Fixed method order: the palette color of a method never changes with the set of methods shown.
-METHOD_ORDER = ["pfca", "shap", "bootstrapped_shap", "grouped_shap", "pfca_crisp", "pfca_single_model", "pfca_fixed", "pfca_apriori", "integrated_gradients"]
+METHOD_ORDER = ["pfca", "shap", "bootstrapped_shap", "grouped_shap", "pfca_crisp", "pfca_single_model", "pfca_fixed", "pfca_apriori", "integrated_gradients", "lime"]
 METHOD_LABELS = {
     "pfca": "PFCA",
     "shap": "Feature level SHAP",
@@ -80,10 +89,14 @@ METHOD_LABELS = {
     "pfca_fixed": "PFCA, fixed configuration",
     "pfca_apriori": "PFCA, a priori partition",
     "integrated_gradients": "Integrated gradients",
+    "lime": "LIME",
 }
 ABLATIONS = {"pfca_crisp", "pfca_single_model", "pfca_fixed", "pfca_apriori"}
 FAMILY_ORDER = ["additive", "interaction", "redundancy"]
-FACTOR_ORDER = ["resamples", "model_classes", "shape", "percentiles", "distance", "solver", "knee"]
+FACTOR_ORDER = ["resamples", "model_classes", "shape", "percentiles", "distance", "solver", "knee", "labels"]
+PHASE_A_KEYS = ["family", "n_samples", "n_features", "rho", "seed"]
+MEDIUM_EFFECT = 0.5  # Cohen's d of the paired differences at which an effect counts as medium (Section 7.6)
+MIN_DATASETS = 6  # datasets required by Section 6.2 for paired tests across datasets to be meaningful
 REFERENCE_METHOD = "shap"
 # column, label, higher is better
 PHASE_B_METRICS = [
@@ -731,7 +744,7 @@ def item_runtime(dfa: pd.DataFrame | None, dfs: pd.DataFrame | None, tab_dir: Pa
 # ----------------------------------------------------------------------
 
 SENSITIVITY_METRICS = ["recovery_error", "support_coverage_truth", "core_coverage_truth", "rank_stability", "n_front"]
-SENSITIVITY_EXTRA = ["quantile_mad_to_largest_b", "sign_confidence_ece", "front_recovery", "hypervolume", "mean_support_width_rel", "explain_wall_seconds"]
+SENSITIVITY_EXTRA = ["quantile_mad_to_largest_b", "sign_confidence_ece", "front_recovery", "hypervolume", "mean_support_width_rel", "label_agreement_with_default", "label_sign_agreement_with_default", "label_entropy", "fraction_negligible", "explain_wall_seconds"]
 
 
 def item_sensitivity(dfs: pd.DataFrame, tab_dir: Path) -> list[Path]:
@@ -784,6 +797,240 @@ def item_phase_c(run_dir: Path, fig_dir: Path) -> list[Path]:
 
 
 # ----------------------------------------------------------------------
+# item 11: linear mixed models of Phase A (Section 7.4)
+# ----------------------------------------------------------------------
+
+MIXED_MODEL_METRICS = [
+    ("recovery_error", "attribution recovery error", False),
+    ("rank_stability", "rank stability", True),
+    ("deletion_auc", "deletion AUC", False),
+    ("insertion_auc", "insertion AUC", True),
+    ("surrogate_r2", "surrogate R2", True),
+    ("support_coverage_truth", "support coverage of the truth", None),
+]
+
+
+def _parse_term(term: str) -> tuple[str, str]:
+    """Factor and level of a patsy term such as C(method, Treatment('shap'))[T.pfca]."""
+    if term == "Intercept":
+        return "intercept", ""
+    level = term[term.index("[T.") + 3 : -1] if "[T." in term else ""
+    inside = term[term.index("(") + 1 : term.index(")")] if term.startswith("C(") else term
+    return inside.split(",")[0].strip(), level
+
+
+def item_phase_a_mixed_models(dfa: pd.DataFrame, tab_dir: Path) -> list[Path]:
+    import statsmodels.formula.api as smf
+
+    need = {"method", "seed", "family"}
+    if not need <= set(dfa.columns):
+        raise ValueError(f"the Phase A metrics lack the columns {sorted(need - set(dfa.columns))}")
+    metrics = [(c, l, h) for c, l, h in MIXED_MODEL_METRICS if c in dfa.columns and dfa[c].notna().any()]
+    if not metrics:
+        raise ValueError("none of the mixed model metrics is present in the Phase A metrics")
+    families = [f for f in FAMILY_ORDER if f in set(dfa["family"])] + sorted(set(dfa["family"]) - set(FAMILY_ORDER))
+    rows, md = [], ["## Linear mixed models of the Phase A metrics (Section 7.4)", ""]
+    md.append("One model per family and metric: the metric is regressed on the method, the sample size, the dimension and the within block correlation as fixed effects (categorical), with a random intercept per replication seed; the method contrasts are relative to feature level SHAP. A design factor with a single level in the available data is dropped from the model. When a single seed is available no random effect can be estimated and an ordinary least squares model is fitted instead, which the model column records. Estimates are differences in the metric; a positive estimate means a larger value than the reference method.")
+    md.append("")
+    for family in families:
+        sub = dfa[dfa["family"] == family]
+        for metric, label, higher in metrics:
+            d = sub[[metric, "method", "seed"] + [c for c in ("n_samples", "n_features", "rho") if c in sub.columns]].dropna(subset=[metric]).copy()
+            methods = ordered_methods(d["method"].unique())
+            if d.empty or len(methods) < 2:
+                note(f"mixed models: {family}, {label}: fewer than two methods with values, skipped")
+                continue
+            ref = REFERENCE_METHOD if REFERENCE_METHOD in methods else methods[0]
+            fixed = [f"C(method, Treatment('{ref}'))"] + [f"C({f})" for f in ("n_samples", "n_features", "rho") if f in d.columns and d[f].nunique() > 1]
+            n_seeds = int(d["seed"].nunique())
+            base = {"family": family, "metric": metric, "higher_is_better": higher, "reference_method": ref, "n_obs": int(len(d)), "n_seeds": n_seeds}
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    if n_seeds >= 2:
+                        fit = mixed_model(d, metric, fixed, "seed")
+                        model = "linear mixed model, random intercept per seed"
+                        group_var = float(np.asarray(fit.cov_re)[0, 0])
+                        params, bse, tvals, pvals, ci = fit.fe_params, fit.bse_fe, fit.tvalues, fit.pvalues, fit.conf_int()
+                    else:
+                        fit = smf.ols(f"{metric} ~ " + " + ".join(fixed), d).fit()
+                        model = "ordinary least squares (single seed, no random effect)"
+                        group_var = float("nan")
+                        params, bse, tvals, pvals, ci = fit.params, fit.bse, fit.tvalues, fit.pvalues, fit.conf_int()
+            except Exception as exc:
+                note(f"mixed models: {family}, {label}: not fitted ({type(exc).__name__}: {exc})")
+                rows.append({**base, "model": "not fitted", "error": f"{type(exc).__name__}: {exc}"})
+                continue
+            for term in params.index:
+                factor, level = _parse_term(str(term))
+                rows.append(
+                    {
+                        **base,
+                        "model": model,
+                        "group_variance": group_var,
+                        "factor": factor,
+                        "level": level,
+                        "term": str(term),
+                        "estimate": float(params[term]),
+                        "se": float(bse[term]),
+                        "statistic": float(tvals[term]),
+                        "p_value": float(pvals[term]),
+                        "ci_low": float(ci.loc[term].iloc[0]),
+                        "ci_high": float(ci.loc[term].iloc[1]),
+                    }
+                )
+            contrasts = pd.DataFrame([r for r in rows if r.get("family") == family and r.get("metric") == metric and r.get("factor") == "method"])
+            md.append(f"### {family} family, {label} ({'higher' if higher else 'lower' if higher is not None else 'nominal 0.90'} is better)")
+            md.append("")
+            md.append(f"{model}; {len(d)} observations, {n_seeds} seed{'s' if n_seeds != 1 else ''}; contrasts relative to {method_label(ref)}.")
+            md.append("")
+            if len(contrasts):
+                show = contrasts[["level", "estimate", "se", "p_value", "ci_low", "ci_high"]].copy()
+                show.insert(0, "method", show.pop("level").map(method_label))
+                md.append(markdown_table(show))
+            md.append("")
+    if not rows:
+        raise ValueError("no mixed model could be fitted on the Phase A metrics")
+    csv_path = tab_dir / "phase_a_mixed_models.csv"
+    pd.DataFrame(rows).to_csv(csv_path, index=False)
+    return [csv_path, write_text(tab_dir / "phase_a_mixed_models.md", "\n".join(md))]
+
+
+# ----------------------------------------------------------------------
+# item 12: pre registered success criteria (Section 7.6)
+# ----------------------------------------------------------------------
+
+CRITERIA_TEXT = {
+    1: "lower attribution recovery error and higher rank stability than feature level SHAP in the redundancy family of Phase A, with at least a medium effect size",
+    2: "faithfulness on the Phase B datasets matched or exceeded relative to feature level SHAP",
+    3: "calibrated intervals: coverage within five percentage points of the nominal level",
+}
+
+
+def _pfca_vs_reference_phase_a(dfa: pd.DataFrame, metric: str) -> pd.DataFrame | None:
+    keys = [k for k in PHASE_A_KEYS if k in dfa.columns]
+    red = dfa[dfa["family"] == "redundancy"] if "family" in dfa.columns else dfa
+    a = red[red["method"] == "pfca"].set_index(keys)[metric].rename("pfca")
+    b = red[red["method"] == REFERENCE_METHOD].set_index(keys)[metric].rename("reference")
+    if a.empty or b.empty:
+        return None
+    return pd.concat([a, b], axis=1, join="inner").dropna()
+
+
+def item_success_criteria(dfa: pd.DataFrame | None, dfb: pd.DataFrame | None, tab_dir: Path) -> list[Path]:
+    from scipy import stats
+
+    if dfa is None and dfb is None:
+        raise ValueError("neither the Phase A nor the Phase B metrics are available")
+    rows = []
+    # criterion 1: redundancy family of Phase A, paired by cell and seed
+    for metric, higher, label in [("recovery_error", False, "attribution recovery error"), ("rank_stability", True, "rank stability")]:
+        row = {"criterion": 1, "phase": "A, redundancy family", "quantity": metric, "direction": "higher" if higher else "lower", "threshold": f"favorable mean difference and |Cohen d| >= {MEDIUM_EFFECT}", "status": "not evaluated"}
+        pair = _pfca_vs_reference_phase_a(dfa, metric) if dfa is not None and metric in dfa.columns and "method" in dfa.columns else None
+        if pair is not None and len(pair) >= 2:
+            es = paired_effect_sizes(pair["pfca"].to_numpy(), pair["reference"].to_numpy(), random_state=EFFECT_SIZE_RANDOM_STATE)
+            favorable = es["mean_difference"] > 0 if higher else es["mean_difference"] < 0
+            row.update({"pfca": float(pair["pfca"].mean()), "reference": float(pair["reference"].mean()), "difference": es["mean_difference"], "cohen_d": es["cohen_d"], "cohen_d_ci_low": es["cohen_d_ci"][0], "cohen_d_ci_high": es["cohen_d_ci"][1], "cliff_delta": es["cliff_delta"], "n": int(len(pair)), "status": "met" if favorable and abs(es["cohen_d"]) >= MEDIUM_EFFECT else "not met"})
+        elif pair is not None:
+            row["status"] = "not evaluated (fewer than two paired cells)"
+        rows.append(row)
+    # criterion 2: Phase B faithfulness, per dataset means
+    for metric, label, higher in PHASE_B_METRICS[:3]:
+        row = {"criterion": 2, "phase": "B", "quantity": metric, "direction": "higher" if higher else "lower", "threshold": f"mean over datasets not worse than the reference, or two sided Wilcoxon p >= 0.05 with at least {MIN_DATASETS} datasets", "status": "not evaluated"}
+        if dfb is not None and {metric, "dataset", "method"} <= set(dfb.columns):
+            means = dfb.groupby(["dataset", "method"])[metric].mean().unstack()
+            if {"pfca", REFERENCE_METHOD} <= set(means.columns):
+                pair = means[["pfca", REFERENCE_METHOD]].dropna()
+                if len(pair):
+                    diff = float((pair["pfca"] - pair[REFERENCE_METHOD]).mean())
+                    favorable = diff >= 0 if higher else diff <= 0
+                    p = float("nan")
+                    if len(pair) >= 2 and not np.allclose(pair["pfca"], pair[REFERENCE_METHOD]):
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore")
+                            p = float(stats.wilcoxon(pair["pfca"], pair[REFERENCE_METHOD], alternative="two-sided", zero_method="wilcox").pvalue)
+                    matches = np.isfinite(p) and p >= 0.05 and len(pair) >= MIN_DATASETS  # a non significant difference counts as matching only with enough datasets for the test to have power
+                    row.update({"pfca": float(pair["pfca"].mean()), "reference": float(pair[REFERENCE_METHOD].mean()), "difference": diff, "p_value": p, "n": int(len(pair)), "status": "met" if favorable or matches else "not met"})
+        rows.append(row)
+    # criterion 3: coverage against the nominal levels
+    for source, df in (("A", dfa), ("B", dfb)):
+        if df is None or "method" not in df.columns:
+            continue
+        for col, nominal in [("support_coverage_truth", NOMINAL["support"]), ("core_coverage_truth", NOMINAL["core"]), ("support_coverage_replicate", NOMINAL["support"]), ("core_coverage_replicate", NOMINAL["core"])]:
+            if col not in df.columns:
+                continue
+            vals = df.loc[df["method"] == "pfca", col].dropna()
+            if vals.empty:
+                continue
+            mean = float(vals.mean())
+            rows.append({"criterion": 3, "phase": source, "quantity": col, "direction": "nominal", "threshold": f"|coverage - {nominal:.2f}| <= {TOLERANCE:.2f}", "pfca": mean, "reference": nominal, "difference": mean - nominal, "n": int(len(vals)), "status": "met" if abs(mean - nominal) <= TOLERANCE else "not met"})
+    if not any(r["status"] in ("met", "not met") for r in rows):
+        raise ValueError("no criterion could be evaluated from the available metrics")
+    df = pd.DataFrame(rows)
+    evaluated = df["status"].isin(["met", "not met"])
+    overall = "met" if evaluated.all() and (df["status"] == "met").all() else ("not met" if (df["status"] == "not met").any() else "not evaluated")
+    csv_path = tab_dir / "success_criteria.csv"
+    df.to_csv(csv_path, index=False)
+    md = ["## Pre registered success criteria (Section 7.6)", ""]
+    md.append("Relative to feature level SHAP the method is considered successful if it (1) " + CRITERIA_TEXT[1] + ", (2) " + CRITERIA_TEXT[2] + ", and (3) " + CRITERIA_TEXT[3] + ". Every criterion is evaluated from the saved metric files and failure is reported rather than concealed. Criterion 1 pairs PFCA and SHAP by cell and seed; the effect size is Cohen's d of the paired differences with a bootstrap confidence interval, and Cliff's delta is reported beside it. Criterion 2 compares the per dataset means; a mean not worse than the reference meets it, and so does a non significant two sided Wilcoxon test (p at least 0.05) when at least six datasets are available, the minimum of Section 6.2. Criterion 3 uses the mean coverage of the PFCA rows against the nominal levels of the support (0.90) and the core (0.50).")
+    md.append("")
+    show = df.copy()
+    for c in ("pfca", "reference", "difference", "cohen_d", "cliff_delta", "p_value"):
+        if c not in show.columns:
+            show[c] = np.nan
+    md.append(markdown_table(show[["criterion", "phase", "quantity", "direction", "pfca", "reference", "difference", "cohen_d", "cliff_delta", "p_value", "n", "status"]], int_cols=("criterion", "n")))
+    md.append("")
+    md.append(f"Overall: {overall}.")
+    return [csv_path, write_text(tab_dir / "success_criteria.md", "\n".join(md))]
+
+
+# ----------------------------------------------------------------------
+# item 13: Pareto front diagnostics (Section 10, collapse of the front)
+# ----------------------------------------------------------------------
+
+FRONT_COLUMNS = ["n_front", "n_front_distinct", "front_collapsed", "n_feasible", "objective_corr_fidelity_complexity", "objective_corr_fidelity_instability", "objective_corr_complexity_instability"]
+
+
+def _front_summary(sub: pd.DataFrame, by: str) -> pd.DataFrame:
+    cols = [c for c in FRONT_COLUMNS if c in sub.columns]
+    d = sub[[by] + cols].copy()
+    if "front_collapsed" in d.columns:
+        d["front_collapsed"] = pd.to_numeric(d["front_collapsed"].map({True: 1.0, False: 0.0, "True": 1.0, "False": 0.0}), errors="coerce")
+    g = d.groupby(by, sort=False)
+    out = g[cols].mean().reset_index().rename(columns={by: "group", "front_collapsed": "fraction_collapsed"})
+    out.insert(1, "n", g.size().to_numpy())
+    return out
+
+
+def item_front_diagnostics(dfa: pd.DataFrame | None, dfs: pd.DataFrame | None, tab_dir: Path) -> list[Path]:
+    parts = []
+    if dfa is not None and {"method", "n_front", "family"} <= set(dfa.columns):
+        sub = dfa[dfa["method"] == "pfca"]
+        if not sub.empty:
+            fam = _front_summary(sub, "family")
+            fam.insert(0, "source", "Phase A")
+            allrows = _front_summary(sub.assign(_all="all families"), "_all")
+            allrows.insert(0, "source", "Phase A")
+            parts += [fam, allrows]
+    if dfs is not None and {"factor", "setting", "n_front"} <= set(dfs.columns):
+        sub = dfs[dfs["factor"] == "solver"]
+        if not sub.empty:
+            sol = _front_summary(sub, "setting")
+            sol.insert(0, "source", "sensitivity, solver")
+            parts.append(sol)
+    if not parts:
+        raise ValueError("no PFCA rows with the Pareto front size are available")
+    out = pd.concat(parts, ignore_index=True)
+    csv_path = tab_dir / "pareto_front_diagnostics.csv"
+    out.to_csv(csv_path, index=False)
+    md = ["## Pareto front diagnostics (Section 10 of the guide)", ""]
+    md.append("Mean over cells and seeds of the number of Pareto optimal configurations (n_front), the number of distinct Pareto optimal explanations (one per partition and retained set), the fraction of runs in which the front collapsed to a single distinct explanation, the number of feasible evaluated configurations and the Spearman correlation between every pair of objectives of Equation 4 over the feasible configurations. A negative correlation means that the two objectives conflict; a front that collapses in most runs would mean that the objective set should be reduced, which the guide asks to report as a finding.")
+    md.append("")
+    md.append(markdown_table(out, int_cols=("n",)))
+    return [csv_path, write_text(tab_dir / "pareto_front_diagnostics.md", "\n".join(md))]
+
+
+# ----------------------------------------------------------------------
 
 
 def main(argv=None):
@@ -830,6 +1077,9 @@ def main(argv=None):
         (8, "runtime and memory table", lambda: item_runtime(dfa, dfs, tab_dir)),
         (9, "sensitivity summary", lambda: item_sensitivity(require(dfs, "sensitivity"), tab_dir)),
         (10, "Phase C figure", lambda: item_phase_c(results / args.phase_c, fig_dir)),
+        (11, "Phase A mixed models (Section 7.4)", lambda: item_phase_a_mixed_models(require(dfa, "Phase A"), tab_dir)),
+        (12, "success criteria (Section 7.6)", lambda: item_success_criteria(dfa, dfb, tab_dir)),
+        (13, "Pareto front diagnostics (Section 10)", lambda: item_front_diagnostics(dfa, dfs, tab_dir)),
     ]
     log_path = run_dir / "items.csv"
     if log_path.exists():

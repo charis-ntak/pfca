@@ -10,7 +10,8 @@ model_classes: [gbm, rf, mlp]
 n_resamples: 100
 background_size: 100
 explainer: auto
-methods: [pfca, pfca_crisp, pfca_single_model, pfca_fixed, pfca_apriori, shap, bootstrapped_shap, grouped_shap]
+methods: [pfca, pfca_crisp, pfca_single_model, pfca_fixed, pfca_apriori, shap, bootstrapped_shap, grouped_shap, integrated_gradients, lime]
+lime_samples: 2000          # perturbations per instance of the LIME baseline (skipped when the optional lime package is missing)
 pfca:
   n_concepts_grid: [2, 3, 4, 5, 6, 8, 10, 12]
   fuzzifier_grid: [1.5, 2.0, 2.5]
@@ -20,6 +21,7 @@ pfca:
   knee_method: utopia
   fuzzy_shape: trapezoidal
   disagreement_threshold: 0.5
+  consensus: true          # consensus clustering over resamples of the instances (Section 10 of the guide)
 perturbation_instances: 20
 n_perturbations: 3
 imputation: conditional

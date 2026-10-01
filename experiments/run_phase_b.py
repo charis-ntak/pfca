@@ -118,17 +118,18 @@ def replicate_attribution(ds: datasets.Dataset, splits: list, r: int, ref, X_exp
     """Replicated feature level attribution for the calibration metrics.
 
     The reference model class is refitted, with the seed of repetition
-    r_rep = (r + 1) mod n_repeats, on the training split of r_rep, and
-    attributed on the explained instances of repetition r. The mask marks the
-    explained instances that are not in that training split; only those are
-    used by the calibration metrics.
+    r_rep, on the training split of r_rep, and attributed on the explained
+    instances of repetition r. The replicate repetition is the one whose
+    training split shares the fewest explained instances with repetition r
+    (``datasets.replicate_repetition``; with repeated cross validation it is
+    the repetition that holds the explained fold out of training). The mask
+    marks the explained instances that are not in that training split; only
+    those are used by the calibration metrics.
     """
-    n_repeats = len(splits)
-    r_rep = (r + 1) % n_repeats
+    r_rep = datasets.replicate_repetition(splits, r, explain_idx)
     info = {"replicate_repeat": r_rep, "n_replicate_instances": 0}
-    if r_rep == r:
+    if r_rep is None:
         print("[phase B] a single repetition gives no independent replicate; calibration metrics are skipped")
-        info["replicate_repeat"] = None
         return None, None, info
     idx_train_rep = splits[r_rep][1]
     mask = ~np.isin(explain_idx, idx_train_rep)
@@ -234,6 +235,8 @@ def run_repetition(ds: datasets.Dataset, splits: list, r: int, cfg: dict, out_di
                 out = protocol.grouped_shap_output(engine, attr, X_explain, groups, task, background_size=cfg.get("grouped_background"), random_state=seed, n_retained=matched.get("concept"), trace_memory=trace)
             elif name == "integrated_gradients":
                 out = protocol.integrated_gradients_output(engine, X_explain, task, trace_memory=trace)
+            elif name == "lime":
+                out = protocol.lime_output(engine, X_explain, task, feature_names=ds.feature_names, num_samples=int(cfg.get("lime_samples", 2000)), random_state=seed, n_retained=matched.get("feature"), trace_memory=trace)
             else:
                 raise ValueError(f"unknown method {name}")
             row = protocol.evaluate(out, ctx)
@@ -294,6 +297,9 @@ def main(argv=None):
     names = [s.strip() for s in args.datasets.split(",") if s.strip()] if args.datasets else None
     cfg = load_config(args.config, {"n_jobs": args.n_jobs, "datasets": names})
     cfg.setdefault("seed", 0)
+    if "lime" in cfg["methods"] and not protocol.lime_available():
+        print("[phase B] skipping lime: the optional lime package is not installed (pip install lime)")
+        cfg["methods"] = [m for m in cfg["methods"] if m != "lime"]
     if args.max_repeats is not None:
         cfg["n_repeats"] = int(min(int(cfg["n_repeats"]), args.max_repeats))
     out_dir = prepare_run(args.results, args.name, cfg)
@@ -307,7 +313,8 @@ def main(argv=None):
     print(f"[phase B] {len(dsets)} datasets ({', '.join(f'{d.name}: {d.X.shape[0]} rows, {d.n_features} features, {d.task}' for d in dsets)}), {cfg['n_repeats']} repetitions, seed {cfg['seed']}, results in {out_dir}")
     t0 = time.time()
     for ds in dsets:
-        splits = list(datasets.stratified_splits(ds.y, ds.task, n_repeats=int(cfg["n_repeats"]), random_state=int(cfg["seed"])))
+        scheme, splits = datasets.make_splits(ds.y, ds.task, n_repeats=int(cfg["n_repeats"]), scheme=str(cfg.get("split_scheme", "auto")), small_sample_rows=int(cfg.get("small_sample_rows", 500)), random_state=int(cfg["seed"]))
+        print(f"[phase B] {ds.name}: split scheme {scheme} ({'repeated five fold cross validation' if scheme == 'repeated_cv' else 'repeated 60/20/20 splits'})")
         methods = applicable_methods(cfg["methods"], ds, cfg)
         for r in range(len(splits)):
             if all(writer.is_done({"dataset": ds.name, "repeat": r, "method": m}) for m in methods):
@@ -317,6 +324,7 @@ def main(argv=None):
             per_instance_writer.append_from_rows(rows, ["dataset", "repeat"])
             writer.append(rows)
             run_row["elapsed_seconds"] = time.time() - t
+            run_row["split_scheme"] = scheme
             runs.append([run_row])
             print(f"[phase B] {ds.name} repetition {r + 1}/{len(splits)} done in {time.time() - t:.1f}s (elapsed {time.time() - t0:.0f}s)", flush=True)
     summarize(out_dir / "metrics.csv", out_dir / "summary.csv")
