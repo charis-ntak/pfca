@@ -88,14 +88,14 @@ def mixed_model_table(gen_tab: Path, tab_dir: Path, blocks: list):
     if not p.exists():
         return
     mm = pd.read_csv(p)
-    mm = mm[(mm["factor"] == "method") & mm["metric"].isin(["recovery_error", "rank_stability", "deletion_auc"])]
+    mm = mm[(mm["factor"] == "method") & mm["metric"].isin(["recovery_error", "rank_stability", "deletion_auc"]) & mm["level"].isin(["pfca", "grouped_shap"])]
     rows = []
     for _, r in mm.iterrows():
         rows.append({"Family": r["family"], "Metric": r["metric"].replace("_", " "), "Method": LABELS.get(r["level"], r["level"]), "Estimate": f"{r['estimate']:+.3f}", "SE": f"{r['se']:.3f}", "95% CI": f"[{r['ci_low']:.3f}, {r['ci_high']:.3f}]", "p": ("<0.001" if r["p_value"] < 0.001 else f"{r['p_value']:.3f}")})
     df = pd.DataFrame(rows)
     df.to_csv(tab_dir / "phase_a_mixed_models.csv", index=False)
     model = mm["model"].iloc[0] if len(mm) else ""
-    blocks.append(md_block("tab:mixed", "Linear mixed model contrasts of every method against feature level SHAP in Phase A, per family and metric", df, f"Model: {model}; sample size, dimension and correlation as categorical fixed effects. A negative estimate means a smaller value than SHAP."))
+    blocks.append(md_block("tab:mixed", "Linear mixed model contrasts of PFCA and of grouped SHAP against feature level SHAP in Phase A, per family and metric", df, f"Model: {model}; sample size, dimension and correlation as categorical fixed effects. A negative estimate means a smaller value than SHAP. The contrasts of the other methods are given in the supplementary file phase_a_mixed_models.csv."))
 
 
 def criteria_table(gen_tab: Path, tab_dir: Path, blocks: list):

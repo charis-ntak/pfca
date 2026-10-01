@@ -211,6 +211,10 @@ python3 -m pytest
 
 The suite covers every module and contains numerical checks of the six properties of Section 5 of the guide (`tests/test_properties.py`, with supporting tests in `tests/test_selection.py` and `tests/test_fuzzification.py`); the mapping from property to test is given in `docs/implementation_notes.md`. The unit tests run offline in well under a minute. `tests/test_experiments.py` additionally runs every script under `experiments/` end to end on tiny configurations through its command line interface (Phases A to D, the sensitivity analysis, the example front and the figures), which takes about one more minute; these tests carry the marker `slow` and are skipped with `python3 -m pytest -m "not slow"`.
 
+## Manuscript
+
+The directory `paper/` holds the manuscript of the reduced scale study: `paper.md` is the source, `refs.bib` the verified bibliography, `build_results.py` turns the result files of the reduced runs (`experiments/configs/*_reduced.yaml`, run folders `results/phase_a_reduced*`, `phase_b_reduced`, `phase_c_reduced`, `sensitivity_reduced` and `example_front`) into the tables and figures of the manuscript, `merge_phase_a.py` merges the per family Phase A folders, and `assemble.py` inserts the generated tables into the source. `PFCA_manuscript.docx` is the built document. The reduced runs use two seeds, 20 resamples and two model classes, the breast cancer dataset for Phase B and the simulated questionnaire for Phase C; the full study configurations are the files without the `_reduced` suffix.
+
 ## Citation
 
 If you use this software, please cite it with the metadata in `CITATION.cff`:

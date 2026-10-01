@@ -1,10 +1,10 @@
 Method,duplication change,n
-PFCA,0.295 (0.484),15
-SHAP,0.498 (0.104),15
-Bootstrapped SHAP,0.527 (0.029),15
-Grouped SHAP,0.051 (0.021),15
-LIME,0.486 (0.089),15
-"PFCA, crisp",0.032 (0.025),15
-"PFCA, single class",0.179 (0.206),15
-"PFCA, fixed",0.318 (0.263),15
-"PFCA, a priori",0.018 (0.006),15
+PFCA,0.266 (0.419),24
+SHAP,0.524 (0.127),24
+Bootstrapped SHAP,0.531 (0.038),24
+Grouped SHAP,0.047 (0.023),24
+LIME,0.522 (0.129),24
+"PFCA, crisp",0.071 (0.132),24
+"PFCA, single class",0.187 (0.230),24
+"PFCA, fixed",0.285 (0.283),24
+"PFCA, a priori",0.017 (0.006),24
