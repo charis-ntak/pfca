@@ -66,15 +66,16 @@ def repetition_seed(base_seed: int, r: int) -> int:
 def load_datasets(cfg: dict) -> list[datasets.Dataset]:
     """Load the datasets named in the configuration, or the curated list when none is named."""
     names = cfg.get("datasets")
+    collection = str(cfg.get("collection", "openml"))  # 'openml' (curated OpenML list) or 'pmlb' (PMLB mirror on GitHub)
     lo, hi = int(cfg.get("min_features", 15)), int(cfg.get("max_features", 100))
     kwargs = {"max_rows": cfg.get("max_rows"), "random_state": int(cfg.get("seed", 0)), "data_home": cfg.get("data_home")}
     if names is None:
-        return datasets.load_benchmarks(lo, hi, None, **kwargs)
-    listed = {b["name"] for b in datasets.BENCHMARKS}
+        return datasets.load_benchmarks(lo, hi, None, collection=collection, **kwargs)
+    listed = {b["name"] for b in (datasets.PMLB_BENCHMARKS if collection == "pmlb" else datasets.BENCHMARKS)}
     out = []
     for name in names:
         if name in listed:
-            out.extend(datasets.load_benchmarks(lo, hi, [name], **kwargs))
+            out.extend(datasets.load_benchmarks(lo, hi, [name], collection=collection, **kwargs))
             continue
         try:
             ds = datasets.load_benchmark(name, **kwargs)

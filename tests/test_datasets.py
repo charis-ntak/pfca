@@ -204,3 +204,26 @@ def test_stratified_splits():
     yr = rng.normal(size=50)
     (r, tr, tu, te), = list(datasets.stratified_splits(yr, "regression", n_repeats=1, proportions=(0.5, 0.3, 0.2)))
     assert r == 0 and len(tr) == 25 and len(tu) == 15 and len(te) == 10
+
+
+def test_pmlb_loader_reads_cached_file(tmp_path):
+    """A cached PMLB file is read offline, the target column is split off and the spec names are resolved."""
+    import gzip
+
+    from pfca.evaluation import datasets
+
+    rng = np.random.default_rng(0)
+    frame = pd.DataFrame(rng.normal(size=(40, 16)), columns=[f"f{i}" for i in range(16)])
+    frame["target"] = (frame["f0"] > 0).astype(int)
+    home = tmp_path / "pmlb"
+    home.mkdir()
+    with gzip.open(home / "toy.tsv.gz", "wt") as fh:
+        frame.to_csv(fh, sep="\t", index=False)
+    ds = datasets.load_benchmark("toy", task="classification", source="pmlb", data_home=str(home))
+    assert ds.n_features == 16 and ds.X.shape[0] == 40 and ds.task == "classification"
+    assert set(np.unique(ds.y)) <= {0, 1} and ds.meta["source"] == "pmlb"
+    spec = datasets.benchmark_spec("pol", source="pmlb")
+    assert spec is not None and spec["pmlb_name"] == "201_pol"
+    assert datasets.benchmark_spec("pol")["source"] == "openml"
+    names = [b["name"] for b in datasets.PMLB_BENCHMARKS]
+    assert len(names) == 15 and len(set(names)) == 15 and names[0] == "breast_cancer"

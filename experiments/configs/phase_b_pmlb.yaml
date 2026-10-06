@@ -1,0 +1,34 @@
+# Benchmark phase on the PMLB collection (GitHub mirror), used where the OpenML API is not reachable.
+# Fifteen datasets: the built in breast cancer dataset, six datasets of the curated list that PMLB hosts
+# (spambase, ionosphere, sonar, pol, cpu_act, house_16H) and eight PMLB datasets of the same kind in place of the
+# curated OpenML datasets that PMLB does not hold. Reduced pool: five repetitions, B = 20, two model classes.
+collection: pmlb
+datasets: null
+data_home: data/pmlb
+min_features: 15
+max_features: 100
+max_rows: 5000
+n_repeats: 5
+split_scheme: auto
+small_sample_rows: 500
+n_explain: 100
+seed: 0
+model_classes: [gbm, rf]
+n_resamples: 20
+background_size: 100
+explainer: auto
+methods: [pfca, pfca_crisp, pfca_single_model, pfca_fixed, shap, bootstrapped_shap, lime]
+lime_samples: 1000
+pfca:
+  n_concepts_grid: [2, 3, 4, 5, 6, 8]
+  fuzzifier_grid: [1.5, 2.0, 2.5]
+  alpha_grid: [0.0, 0.25, 0.5, 0.75, 1.0]
+  solver: grid
+  knee_method: utopia
+  consensus: true
+perturbation_instances: 10
+n_perturbations: 2
+imputation: conditional
+grouped_background: null
+save_explanations: false
+n_jobs: 4
