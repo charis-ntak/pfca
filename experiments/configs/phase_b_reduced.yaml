@@ -1,0 +1,30 @@
+# Reduced scale Phase B used for the manuscript draft: the built in breast cancer dataset (the OpenML downloads
+# were not reachable in the execution environment), five repetitions of the split, B = 20 and two model classes.
+datasets: [breast_cancer]
+min_features: 15
+max_features: 100
+max_rows: 5000
+n_repeats: 5
+split_scheme: auto
+small_sample_rows: 500
+n_explain: 100
+seed: 0
+model_classes: [gbm, rf]
+n_resamples: 20
+background_size: 100
+explainer: auto
+methods: [pfca, pfca_crisp, pfca_single_model, pfca_fixed, shap, bootstrapped_shap, lime]
+lime_samples: 1000
+pfca:
+  n_concepts_grid: [2, 3, 4, 5, 6, 8]
+  fuzzifier_grid: [1.5, 2.0, 2.5]
+  alpha_grid: [0.0, 0.25, 0.5, 0.75, 1.0]
+  solver: grid
+  knee_method: utopia
+  consensus: true
+perturbation_instances: 10
+n_perturbations: 2
+imputation: conditional
+grouped_background: null
+save_explanations: false
+n_jobs: 2

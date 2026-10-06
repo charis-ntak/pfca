@@ -16,6 +16,9 @@ percentiles:
 distances: [correlation, loading]
 solvers: [grid, nsga2]
 knee_methods: [utopia, hyperplane, sparsest_within_10pct, median_complexity]
+label_sets:
+  - {name: default}
+  - {name: three_labels, centers: [-1.0, 0.0, 1.0], names: [negative, negligible, positive]}
 defaults:                 # B falls back to the largest listed value and M to all available classes
   n_resamples: 100
   n_model_classes: 3

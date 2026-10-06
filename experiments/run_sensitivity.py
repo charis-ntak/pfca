@@ -49,6 +49,16 @@ knee            utopia against hyperplane knee point and against two
                 10 percent of the best fidelity loss on the front, and the
                 front member whose complexity is closest to the median
                 complexity of the front.
+labels          alternative linguistic label sets (Section 10 of the guide,
+                mitigation of the arbitrariness of the labels): the default
+                Ruspini partition against the label sets listed under
+                label_sets of the configuration, each given by the centers of
+                its labels on the standardized axis. The selection does not
+                depend on the labels, so the Table 1 metrics are unchanged by
+                construction and the rows report the agreement of the labels
+                with the default set (exact, and by sign class), the entropy
+                of the label distribution, the fraction of negligible labels
+                and the mean compatibility of the best label.
 
 Perturbation stability is not part of the sensitivity metrics and is switched
 off by default (perturbation_instances 0) because it refits nothing but
@@ -90,10 +100,11 @@ from pfca.evaluation import protocol  # noqa: E402
 from pfca.evaluation.budget import measure  # noqa: E402
 from pfca.evaluation.synthetic import make_synthetic  # noqa: E402
 from pfca.explainer import PFCAExplainer, PFCAExplanation  # noqa: E402
-from pfca.fuzzification import centroid_array, fuzzify_array  # noqa: E402
+from pfca.fuzzification import LinguisticLabelSet, centroid_array, fuzzify_array  # noqa: E402
 from pfca.selection import SelectionResult  # noqa: E402
 
-FACTORS = ("resamples", "model_classes", "shape", "percentiles", "distance", "solver", "knee")
+FACTORS = ("resamples", "model_classes", "shape", "percentiles", "distance", "solver", "knee", "labels")
+DEFAULT_LABEL_SET = "default"
 KNEE_METHODS = ("utopia", "hyperplane")
 ALTERNATIVE_SELECTIONS = ("sparsest_within_10pct", "median_complexity")
 KEY_COLUMNS = ["cell", "seed", "factor", "setting"]
@@ -159,6 +170,7 @@ class Setting:
     concept_distance: str
     solver: str
     knee_method: str
+    label_set: str = DEFAULT_LABEL_SET
 
     def replace(self, **changes) -> "Setting":
         return dataclasses.replace(self, **changes)
@@ -175,7 +187,70 @@ class Setting:
             "concept_distance": self.concept_distance,
             "solver": self.solver,
             "knee_method": self.knee_method,
+            "label_set": self.label_set,
         }
+
+
+def label_set_specs(cfg: dict) -> dict[str, dict]:
+    """Label sets of the labels factor by name; the default set is always present and listed first."""
+    specs: dict[str, dict] = {DEFAULT_LABEL_SET: {}}
+    for spec in cfg.get("label_sets") or []:
+        if isinstance(spec, str):
+            spec = {"name": spec}
+        name = str(spec.get("name", "")).strip()
+        if not name:
+            raise ValueError("every entry of label_sets needs a name")
+        if name == DEFAULT_LABEL_SET:
+            continue
+        centers = spec.get("centers")
+        if centers is None or len(centers) < 2:
+            raise ValueError(f"label set '{name}' needs at least two centers")
+        names = spec.get("names")
+        if names is not None and len(names) != len(centers):
+            raise ValueError(f"label set '{name}' lists {len(names)} names for {len(centers)} centers")
+        specs[name] = {"centers": [float(c) for c in centers], "names": [str(n) for n in names] if names is not None else None}
+    return specs
+
+
+def build_label_set(spec: dict) -> LinguisticLabelSet:
+    """LinguisticLabelSet of one entry of :func:`label_set_specs` (the default set for an empty entry)."""
+    if not spec:
+        return LinguisticLabelSet()
+    return LinguisticLabelSet.with_breakpoints(spec["centers"], spec["names"])
+
+
+def label_statistics(expl: PFCAExplanation, default_set: LinguisticLabelSet | None = None) -> dict:
+    """Agreement of the linguistic labels of an explanation with the default label set and summary of their distribution.
+
+    Computed over the explained instances and the retained concepts. The exact
+    agreement is defined only when the two sets have the same number of
+    labels; the sign class agreement compares the sign of the representative
+    point of the chosen labels (negative, negligible, positive). The entropy
+    of the label distribution is normalized by the logarithm of the number of
+    labels.
+    """
+    default_set = default_set if default_set is not None else LinguisticLabelSet()
+    idx, deg = expl.best_labels()
+    ret = np.asarray(expl.retained, dtype=int)
+    if ret.size == 0:
+        return {"n_labels": len(expl.label_set.names)}
+    idx_r, deg_r = idx[:, ret], deg[:, ret]
+    n_labels = len(expl.label_set.names)
+    counts = np.bincount(idx_r.ravel(), minlength=n_labels).astype(float)
+    p = counts / counts.sum()
+    entropy = float(-(p[p > 0] * np.log(p[p > 0])).sum() / np.log(n_labels)) if n_labels > 1 else 0.0
+    sign = np.sign(expl.label_set.centers)
+    d_idx, _ = default_set.best_label_array(expl.quantiles, expl.scale)
+    d_idx_r = d_idx[:, ret]
+    d_sign = np.sign(default_set.centers)
+    return {
+        "n_labels": int(n_labels),
+        "label_agreement_with_default": float(np.mean(idx_r == d_idx_r)) if n_labels == len(default_set.names) else float("nan"),
+        "label_sign_agreement_with_default": float(np.mean(sign[idx_r] == d_sign[d_idx_r])),
+        "label_entropy": entropy,
+        "fraction_negligible": float(np.mean(sign[idx_r] == 0)),
+        "mean_label_compatibility": float(np.mean(deg_r)),
+    }
 
 
 def cell_label(cell: dict) -> str:
@@ -242,6 +317,9 @@ def build_plan(cfg: dict, default: Setting, n_classes_available: int, factors: l
             if knee not in KNEE_METHODS + ALTERNATIVE_SELECTIONS:
                 raise ValueError(f"Unknown knee method or representative selection '{knee}'")
             plan.append(("knee", str(knee), default.replace(knee_method=str(knee))))
+    if "labels" in factors:
+        for name in label_set_specs(cfg):
+            plan.append(("labels", name, default.replace(label_set=name)))
     return plan
 
 
@@ -454,6 +532,8 @@ class CellRun:
         kw["knee_method"] = setting.knee_method if setting.knee_method in KNEE_METHODS else self.default.knee_method
         kw["nsga_pop_size"] = int(self.cfg.get("nsga_pop_size", 40))
         kw["nsga_generations"] = int(self.cfg.get("nsga_generations", 30))
+        if setting.label_set != DEFAULT_LABEL_SET:
+            kw["linguistic_labels"] = build_label_set(label_set_specs(self.cfg)[setting.label_set])
         return kw
 
     def subset(self, setting: Setting) -> AttributionResult:
@@ -576,6 +656,7 @@ class CellRun:
                 "explain_wall_seconds": out.wall_seconds,
             }
         )
+        row.update(label_statistics(expl))
         row.update(extras)
         return row
 
@@ -650,7 +731,7 @@ def summarize(metrics_path: Path, out_path: Path) -> pd.DataFrame | None:
     sd.columns = [f"{c}_sd" for c in sd.columns]
     summary = pd.concat([g.size().rename("n_seeds"), mean, sd], axis=1).copy().reset_index()
     summary.to_csv(out_path, index=False)
-    show = [c for c in ("n_seeds", "recovery_error", "rank_recovery", "rank_stability", "support_coverage_truth", "core_coverage_truth", "sign_confidence_ece", "n_front", "n_type2", "mean_support_width", "quantile_mad_to_largest_b", "front_recovery", "hypervolume", "explain_wall_seconds") if c in summary.columns]
+    show = [c for c in ("n_seeds", "recovery_error", "rank_recovery", "rank_stability", "support_coverage_truth", "core_coverage_truth", "sign_confidence_ece", "n_front", "n_type2", "mean_support_width", "quantile_mad_to_largest_b", "front_recovery", "hypervolume", "label_sign_agreement_with_default", "explain_wall_seconds") if c in summary.columns]
     with pd.option_context("display.width", 250, "display.max_columns", 40, "display.float_format", "{:.4g}".format):
         print(summary[by + show].to_string(index=False))
     return summary

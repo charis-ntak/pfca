@@ -103,12 +103,12 @@ The package uses a src layout and is organized in the five modules named in Sect
 | `src/pfca/evaluation/synthetic.py` | Synthetic generators of Phase A (additive, interaction and redundancy families) with closed form true attributions, and the factorial design |
 | `src/pfca/evaluation/metrics.py` | The metrics of Table 1: recovery error, concept and rank recovery, deletion and insertion curves, surrogate fidelity, rank and perturbation stability, interval coverage, sign confidence calibration, duplication invariance |
 | `src/pfca/evaluation/baselines.py` | Feature level SHAP, grouped Shapley values with crisp groups, bootstrapped SHAP, LIME (optional), integrated gradients, ablation builders |
-| `src/pfca/evaluation/protocol.py` | The shared procedure of Section 7.3: every method computed from one attribution pool, and `evaluate` for the metrics |
+| `src/pfca/evaluation/protocol.py` | The shared procedure of Section 7.3: every method computed from one attribution pool (PFCA and its ablations, feature level SHAP, bootstrapped SHAP, grouped SHAP, integrated gradients and LIME), the Pareto front diagnostics, and `evaluate` for the metrics |
 | `src/pfca/evaluation/statistics.py` | Wilcoxon tests with Holm correction, Friedman and Nemenyi, effect sizes with bootstrap intervals, linear mixed, ordinal and binomial mixed models |
-| `src/pfca/evaluation/datasets.py` | Benchmark loaders of Phase B (OpenML by name and version, built in scikit-learn datasets offline), questionnaire loader of Phase C, repeated 60/20/20 splits |
+| `src/pfca/evaluation/datasets.py` | Benchmark loaders of Phase B (OpenML by name and version, built in scikit-learn datasets offline), questionnaire loader of Phase C, repeated 60/20/20 splits and repeated five fold cross validation for small samples |
 | `src/pfca/evaluation/budget.py` | Wall clock time and peak memory measurement |
 | `experiments/` | `common.py` (configuration, environment logging, resumable result files, reference model tuning), the phase scripts, `make_demo_questionnaire.py`, `example_front.py`, `make_figures.py` and the YAML configurations under `configs/` |
-| `tests/` | Unit tests of every module and the numerical checks of the properties of Section 5 |
+| `tests/` | Unit tests of every module, the numerical checks of the properties of Section 5, and end to end runs of the experiment scripts on tiny configurations |
 | `docs/` | The study design guide, its Markdown conversion and the implementation notes |
 | `data/`, `results/`, `figures/`, `tables/` | Inputs of Phase C and outputs of the scripts; contents other than the README files are not versioned |
 
@@ -130,7 +130,7 @@ The design of Section 6.1 (three families, sample sizes 200, 500 and 2000, dimen
 python3 experiments/run_phase_b.py --config experiments/configs/phase_b.yaml --results results
 ```
 
-The benchmark list of `pfca.evaluation.datasets.BENCHMARKS` is downloaded from OpenML by name and version at run time (network access required); datasets outside 15 to 100 features are skipped. Ten repetitions of the 60/20/20 split are run per dataset, the reference gradient boosting model is tuned on the tuning split, and `metrics.csv`, `runs.csv` and `summary.csv` are written. Options: `--datasets breast_cancer,spambase` restricts the list and `--max-repeats` caps the repetitions. The built in `breast_cancer` dataset loads offline.
+The benchmark list of `pfca.evaluation.datasets.BENCHMARKS` is downloaded from OpenML by name and version at run time (network access required); datasets outside 15 to 100 features are skipped. Where the OpenML API is not reachable, `collection: pmlb` in the configuration (`experiments/configs/phase_b_pmlb.yaml`) switches to `PMLB_BENCHMARKS`, fifteen datasets served from the PMLB collection on GitHub (six of the curated list under their PMLB names, the breast cancer dataset, and eight PMLB datasets of the same kind in place of the curated datasets that PMLB does not hold); the files are cached under `data/pmlb` after the first download. Ten repetitions of the 60/20/20 split are run per dataset, the reference gradient boosting model is tuned on the tuning split, and `metrics.csv`, `runs.csv` and `summary.csv` are written. Datasets with fewer than `small_sample_rows` rows (500) use repeated five fold cross validation instead of the 60/20/20 splits (`split_scheme: auto`, Section 7.3). The LIME baseline needs the optional `lime` package (`pip install lime`) and is skipped with a message otherwise; integrated gradients need the `mlp` model class. Options: `--datasets breast_cancer,spambase` restricts the list and `--max-repeats` caps the repetitions. The built in `breast_cancer` dataset loads offline.
 
 ### Phase C, psychological questionnaire
 
@@ -155,7 +155,7 @@ python3 experiments/run_phase_d.py analyze --results results --name phase_d --re
 python3 experiments/run_sensitivity.py --config experiments/configs/sensitivity.yaml --results results
 ```
 
-One attribution pool per cell and seed is fitted at the largest number of resamples with every model class, and the factors of Section 7.5 are varied one at a time around the default setting: number of resamples (20, 50, 100, 200), number of model classes (1 to 4), fuzzy number shape and percentile levels, correlation against loading distance, grid against NSGA II solver (with the fraction of the grid front recovered and the hypervolumes), and the knee criterion against alternative representative selections. `--factors resamples,solver` restricts the factors and `--seeds` the number of seeds.
+One attribution pool per cell and seed is fitted at the largest number of resamples with every model class, and the factors of Section 7.5 are varied one at a time around the default setting: number of resamples (20, 50, 100, 200), number of model classes (1 to 4), fuzzy number shape and percentile levels, correlation against loading distance, grid against NSGA II solver (with the fraction of the grid front recovered and the hypervolumes), the knee criterion against alternative representative selections, and the default linguistic label set against the alternative label sets of the configuration (Section 10 of the guide). `--factors resamples,solver` restricts the factors and `--seeds` the number of seeds.
 
 ### Figures and tables
 
@@ -164,7 +164,7 @@ python3 experiments/example_front.py --out figures
 python3 experiments/make_figures.py --results results --out .
 ```
 
-`make_figures.py` builds the items of Table 2 of the guide from the saved metric files of the runs above and writes the figures (PNG and PDF) to `figures/` and the tables (CSV and Markdown) to `tables/` under `--out`; an item whose inputs are missing is skipped with a printed note, so the script can be run at any stage of the study, and the list of produced and skipped items is logged in `results/make_figures/items.csv`. The run names are given by `--phase-a`, `--phase-b`, `--phase-c` and `--sensitivity` (defaults `phase_a`, `phase_b`, `phase_c`, `sensitivity`), and `--stability-column` selects the stability metric of the Phase A figure. `example_front.py` fits PFCA on one synthetic problem and draws the example Pareto front with the knee point and three explanations taken from the front (item 7); `make_figures.py` checks that this figure exists. Figures and tables are never edited by hand. The lists of files are given in `figures/README.md` and `tables/README.md`.
+`make_figures.py` builds the items of Table 2 of the guide from the saved metric files of the runs above and writes the figures (PNG and PDF) to `figures/` and the tables (CSV and Markdown) to `tables/` under `--out`; an item whose inputs are missing is skipped with a printed note, so the script can be run at any stage of the study, and the list of produced and skipped items is logged in `results/make_figures/items.csv`. The run names are given by `--phase-a`, `--phase-b`, `--phase-c` and `--sensitivity` (defaults `phase_a`, `phase_b`, `phase_c`, `sensitivity`), and `--stability-column` selects the stability metric of the Phase A figure. `example_front.py` fits PFCA on one synthetic problem and draws the example Pareto front with the knee point and three explanations taken from the front (item 7); `make_figures.py` checks that this figure exists. Beyond Table 2 the script writes the linear mixed models of the Phase A metrics (Section 7.4), the evaluation of the pre registered success criteria (Section 7.6) and the Pareto front diagnostics of Section 10 (items 11 to 13). Figures and tables are never edited by hand. The lists of files are given in `figures/README.md` and `tables/README.md`.
 
 ## Smoke configurations
 
@@ -201,7 +201,7 @@ Section 7.6 of the guide freezes the analysis plan and the success criteria befo
 2. matches or exceeds faithfulness on the Phase B datasets, and
 3. produces calibrated intervals with coverage within five percentage points of the nominal level.
 
-Failure on any criterion is reported rather than concealed.
+Failure on any criterion is reported rather than concealed: `make_figures.py` evaluates the three criteria from the saved metric files and writes `tables/success_criteria.csv` and `tables/success_criteria.md` with a verdict per criterion and overall.
 
 ## Testing
 
@@ -209,7 +209,11 @@ Failure on any criterion is reported rather than concealed.
 python3 -m pytest
 ```
 
-The suite covers every module and contains numerical checks of the six properties of Section 5 of the guide (`tests/test_properties.py`, with supporting tests in `tests/test_selection.py` and `tests/test_fuzzification.py`); the mapping from property to test is given in `docs/implementation_notes.md`. The tests run offline in well under a minute.
+The suite covers every module and contains numerical checks of the six properties of Section 5 of the guide (`tests/test_properties.py`, with supporting tests in `tests/test_selection.py` and `tests/test_fuzzification.py`); the mapping from property to test is given in `docs/implementation_notes.md`. The unit tests run offline in well under a minute. `tests/test_experiments.py` additionally runs every script under `experiments/` end to end on tiny configurations through its command line interface (Phases A to D, the sensitivity analysis, the example front and the figures), which takes about one more minute; these tests carry the marker `slow` and are skipped with `python3 -m pytest -m "not slow"`.
+
+## Manuscript
+
+The manuscript drafts are not versioned. The directory `paper/` is ignored by git, together with every `.docx` file, and is kept in the local working copy of the author. It holds the manuscript source, the verified bibliography, the scripts which turn the result files of the reduced runs (`experiments/configs/*_reduced.yaml`) into the tables and figures of the manuscript, and the built document. The reduced runs use two seeds, 20 resamples and two model classes, the breast cancer dataset for Phase B and the simulated questionnaire for Phase C; the full study configurations are the files without the `_reduced` suffix.
 
 ## Citation
 
